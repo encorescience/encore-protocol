@@ -39,4 +39,6 @@ jobs:
 
       - name: Unit tests
         working-directory: registry
+        env:
+          PROTOCOL_ROOT: ${{ github.workspace }}/protocol
         run: python -m pytest -q $(cd ../protocol && git ls-files 'tests/*.py')

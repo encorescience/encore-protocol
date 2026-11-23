@@ -29,6 +29,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 REPO_URL = "https://github.com/encorescience/encore-registry.git"
+PROTOCOL_URL = "https://github.com/encorescience/encore-protocol.git"
+# What the registry takes from the protocol, at the version its protocol.lock names.
+LAID = ("docs", "schemas", "tools")
 TOOLS = "Bash,Read,Write,Edit,Glob,Grep,WebFetch,WebSearch,Agent,TodoWrite"
 NOT_TOOLS = "ScheduleWakeup,CronCreate,CronDelete,CronList,Monitor,RemoteTrigger,Workflow"
 QUICK = ("claims", "claims-check", "author")
@@ -105,20 +108,38 @@ def dataset_of(spec: str, version: str = "") -> Dataset:
     return Dataset(archive, id_, f"{archive}:{id_}", "", version)
 
 
+def cached_clone(url: str, name: str, ref: str) -> Path:
+    """A cached shallow clone of URL at REF (a branch, a tag or a commit), brought up to date."""
+    cache = Path(os.environ.get("ENCORE_CACHE") or Path.home() / ".cache" / "encore") / name
+    if not (cache / ".git").exists():
+        cache.mkdir(parents=True, exist_ok=True)
+        git("init", "-q", cwd=cache)
+        git("remote", "add", "origin", url, cwd=cache)
+    git("fetch", "-q", "--depth", "1", "origin", ref, cwd=cache)
+    git("checkout", "-q", "-f", "FETCH_HEAD", cwd=cache)
+    return cache
+
+
 def registry_source(ref: str) -> Path:
-    """The registry to copy for a run: the clone this package sits in, when it is installed from one; else a
-    cached clone of the public repository at REF, brought up to date."""
+    """The registry to copy for a run: a cached clone of the public repository at REF."""
+    return cached_clone(REPO_URL, "registry", ref)
+
+
+def protocol_source(ref: str) -> Path:
+    """The protocol to lay over the copy: the clone of encore-protocol this package sits in, when it is installed
+    from one; else a cached clone of the public repository at REF, the version the registry's protocol.lock names."""
     here = Path(__file__).resolve().parents[1]
     if (here / "docs" / "protocol.md").is_file() and (here / ".git").exists():
         return here
-    cache = Path(os.environ.get("ENCORE_CACHE") or Path.home() / ".cache" / "encore") / "registry"
-    if (cache / ".git").exists():
-        git("fetch", "-q", "--depth", "1", "origin", ref, cwd=cache)
-        git("checkout", "-q", "-f", "FETCH_HEAD", cwd=cache)
-    else:
-        cache.parent.mkdir(parents=True, exist_ok=True)
-        git("clone", "-q", "--depth", "1", "--branch", ref, REPO_URL, str(cache))
-    return cache
+    return cached_clone(PROTOCOL_URL, "protocol", ref)
+
+
+def lay_protocol(source: Path, registry: Path) -> None:
+    """Copy the protocol's docs/, schemas/ and tools/ over a copy of the registry, which keeps them out of its
+    commits (its .gitignore)."""
+    for folder in LAID:
+        shutil.copytree(source / folder, registry / folder, dirs_exist_ok=True,
+                        ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
 
 
 def paper_text(path: Path) -> tuple[str, list[str]]:
@@ -169,11 +190,19 @@ class Run:
         self.logs.mkdir(exist_ok=True)
         shutil.rmtree(self.registry, ignore_errors=True)   # a setup that stopped part-way
         source = registry_source(self.ref)
-        say(f"Copying the registry's protocol from {source}")
+        say(f"Copying the registry from {source}")
         git("clone", "-q", str(source), str(self.registry))
         git("checkout", "-q", "-b", f"encore/{self.dataset.folder}", cwd=self.registry)
         git("config", "user.name", "encore", cwd=self.registry)
         git("config", "user.email", "encore@localhost", cwd=self.registry)
+        # A registry from before the protocol had a repository of its own (2026-11-23) has no protocol.lock and
+        # holds the protocol itself.
+        lock = self.registry / "protocol.lock"
+        protocol_ref = lock.read_text().strip() if lock.is_file() else None
+        if protocol_ref:
+            psource = protocol_source(protocol_ref)
+            say(f"Laying the protocol ({protocol_ref}) over it, from {psource}")
+            lay_protocol(psource, self.registry)
         self.prune()
         protocol = (self.registry / "docs" / "protocol.md").read_text().split("Version: `", 1)[1].split("`", 1)[0]
         name = doi.replace("/", "-")
@@ -193,7 +222,7 @@ class Run:
             target["path" if d.archive == "local" else "url"] = d.location
             (self.registry / "targets" / "local.json").write_text(json.dumps({"targets": [target]}, indent=1))
         self.state = {"prepared": True, "dataset": d.__dict__, "folder": d.folder, "doi": doi, "title": title,
-                      "mode": "full" if self.full else "quick", "model": self.model, "protocol": protocol,
+                      "mode": "full" if self.full else "quick", "model": self.model, "protocol": protocol, "protocol_ref": protocol_ref,
                       "source": str(source), "started": now(), "roles": {}}
         self.save()
 

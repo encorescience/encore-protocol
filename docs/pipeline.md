@@ -23,7 +23,7 @@ dataset per step, and the dashboard's Pipeline page shows them.
 | 10 | Report | no | script, sent by a person | issues to the dataset's owners |
 | 11 | Upkeep | depends | runner | deprecation; repeat attempts, made blind and then reconciled with the attempt before (agent `reconcile`, after verification; [protocol](protocol.md), "Repeat attempts") |
 
-New targets come from the [Track DANDI](../.github/workflows/targets.yml)
+New targets come from the [Track DANDI](https://github.com/encorescience/encore-registry/blob/main/.github/workflows/targets.yml)
 workflow. Every day it rebuilds `targets/dandisets.json` from the archive. When
 the list has changed, it opens or updates a pull request that says what
 changed: new dandisets that name a paper, papers added to existing targets
@@ -31,7 +31,7 @@ changed: new dandisets that name a paper, papers added to existing targets
 of attempted dandisets, which are candidates for a repeat attempt. Merging the
 pull request puts the new targets in the runner's queue.
 A person asks for a particular attempt, such as a repeat after a conversion was
-fixed, with a run request ([queue.md](queue.md)); requests run before the
+fixed, with a run request ([queue.md](https://github.com/encorescience/encore-registry/blob/main/docs/queue.md)); requests run before the
 targets the runner chooses itself.
 
 ## Paper match

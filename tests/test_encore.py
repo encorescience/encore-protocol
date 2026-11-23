@@ -145,3 +145,20 @@ def test_a_run_keeps_only_the_example_attempt(tmp_path):
     r.prune()
     left = sorted(p.relative_to(reg).as_posix() for p in reg.rglob("*") if p.is_file() and ".git" not in p.parts)
     assert left == ["attempts/001453-fouke-2025-01.yaml", "claims/001453/a.yaml", "entries/001453-fouke-2025/x.ipynb"]
+
+
+def test_the_protocol_is_laid_over_a_copy_of_the_registry(tmp_path):
+    from encore_science.run import LAID, lay_protocol
+    protocol, registry = tmp_path / "protocol", tmp_path / "registry"
+    for folder in LAID:
+        (protocol / folder / "sub").mkdir(parents=True)
+        (protocol / folder / "sub" / "file.txt").write_text(f"protocol {folder}")
+    (protocol / "tools" / "__pycache__").mkdir()
+    (protocol / "tools" / "__pycache__" / "x.pyc").write_text("")
+    (protocol / "README.md").write_text("the protocol's own")
+    (registry / "docs").mkdir(parents=True)
+    (registry / "docs" / "queue.md").write_text("the registry's own")
+    lay_protocol(protocol, registry)
+    assert all((registry / folder / "sub" / "file.txt").read_text() == f"protocol {folder}" for folder in LAID)
+    assert (registry / "docs" / "queue.md").read_text() == "the registry's own"
+    assert not (registry / "tools" / "__pycache__").exists() and not (registry / "README.md").exists()

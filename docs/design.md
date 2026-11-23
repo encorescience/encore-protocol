@@ -187,11 +187,11 @@ The public site is static and is built from the files above by
   before).
 - **`badge/<archive>/<id>.svg`:** a badge an archive can show on a dataset's
   own page, with the number of findings reproduced from it. The same numbers
-  are in the dataset's JSON, under `badge` ([badges.md](badges.md)).
+  are in the dataset's JSON, under `badge` ([badges.md](https://github.com/encorescience/encore-registry/blob/main/docs/badges.md)).
 - **`badge/papers/<key>.svg`** and **`api/papers/<key>.json`:** the same for
   one paper. Datasets, papers and authors each have two more badge styles
   with all the outcomes, at `…-outcomes.svg` and `…-card.svg`
-  ([badges.md](badges.md)).
+  ([badges.md](https://github.com/encorescience/encore-registry/blob/main/docs/badges.md)).
 - **Executed notebooks** under `notebooks/`, from CI.
 
 ## Repository layout
@@ -250,7 +250,7 @@ if their authors want.
    agent attempts each with a person watching. The purpose is to learn which
    outcomes and blocking reasons actually occur and what a verifier needs.
    The schemas below are revised from what the pilot shows. Lessons from
-   each attempt are in [`pilot-notes/`](pilot-notes), one file per attempt, and the lessons by protocol version in [`pilot-notes.md`](pilot-notes.md). The steps an author and a
+   each attempt are in [`pilot-notes/`](https://github.com/encorescience/encore-registry/tree/main/docs/pilot-notes), one file per attempt, and the lessons by protocol version in [`pilot-notes.md`](https://github.com/encorescience/encore-registry/blob/main/docs/pilot-notes.md). The steps an author and a
    verifier follow are in [`protocol.md`](protocol.md).
 2. **Deposit path.** Schemas, the automated gates, the agent contributor kit
    (one command that locks, lints and runs an entry locally, and a guide to
