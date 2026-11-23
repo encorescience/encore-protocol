@@ -24,37 +24,8 @@ run-name: "Agent run: ${{ inputs.paper || inputs.dataset || inputs.dandiset }}${
 # the pull request.
 
 on:
-  workflow_dispatch:
-    inputs:
-      paper:
-        description: "The paper's key (tingley-2021; docs/paper-first.md)"
-        required: false
-      dataset:
-        description: "Unused since records are by paper; runners started before then send it"
-        required: false
-      dandiset:
-        description: "The same, under its old name"
-        required: false
-      role:
-        description: "Which run"
-        required: true
-        type: choice
-        options: [author, author-answers, verifier-1, author-revise-1, verifier-2, author-revise-2, verifier-3, author-revise-3, reconcile, recorder]
-      model:
-        description: "Model"
-        default: claude-opus-5-5
-      version:
-        description: "Dataset version for the author (empty: a published version it chooses)"
-        default: ""
-      account:
-        description: "Account: verified, unverified (a run it flags fails, for the runner to repeat on verified), or api (the API key with prepaid credits, ANTHROPIC_API_KEY_CREDITS)"
-        type: choice
-        options: [verified, unverified, api]
-        default: verified
-      replicate:
-        description: "For a replicate (docs/replicates.md): its name, r1, r2, ... Empty for an attempt"
-        default: ""
-  # Called by attempt-sequence.yml, which runs the five roles of one attempt in order.
+  # Called by the registry's workflow of the same name, which is the one started by hand or by the
+  # queue runner, and by its attempt-sequence.yml, at the version of this repository its protocol.lock names.
   workflow_call:
     inputs:
       paper:
@@ -129,6 +100,23 @@ jobs:
           persist-credentials: false
           fetch-depth: 1   # no step reads history, and all of it is ~930 MB (two jobs a run, eleven runs a chain)
 
+      # The protocol comes from encore-protocol, at the version the registry's protocol.lock names; the
+      # registry holds only the records. Its docs/, schemas/ and tools/ are laid over the checkout, where the
+      # registry's .gitignore keeps them out of every commit.
+      - uses: actions/checkout@v4
+        with:
+          repository: encorescience/encore-protocol
+          path: .protocol
+          fetch-depth: 0   # every version, for the one main names and the one the attempt's branch names
+          persist-credentials: false
+
+      - name: Lay the protocol over the registry, at main's version
+        run: |
+          ref=$(git show "$GITHUB_SHA:protocol.lock" | tr -d '[:space:]')
+          echo "PROTOCOL_REF=$ref" >> "$GITHUB_ENV"
+          git -C .protocol archive "$ref" -- docs schemas tools | tar -x
+          echo "Protocol $ref ($(git -C .protocol rev-parse --short "$ref^{commit}"))" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Start from the attempt's branch if it exists
         id: start
         run: |
@@ -144,17 +132,34 @@ jobs:
           { echo "FOLDER=$FOLDER"; echo "BRANCH=$BRANCH"; } >> "$GITHUB_ENV"
           echo "folder=$FOLDER" >> "$GITHUB_OUTPUT"
           if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null; then
-            git fetch --depth 1 origin "$BRANCH" && git checkout -B "$BRANCH" FETCH_HEAD
+            git fetch --depth 1 origin "$BRANCH" && git checkout -f -B "$BRANCH" FETCH_HEAD
             # The registry's tools as the workflow has them, not as the branch had them when its attempt began: a
             # branch made before a fix would otherwise run without it. Working files only, so they are never committed.
-            git restore --worktree --source "$GITHUB_SHA" -- tools
-            # The reconcile run's instructions too: it compares attempts and is not part of the blind one, so it
-            # follows the instructions as they are now (asari-2009's ran those of four days before, 2026-11-17).
-            [ "$ROLE" != reconcile ] || git restore --worktree --source "$GITHUB_SHA" -- docs/agents/reconcile.md docs/protocol.md schemas
+            git restore --worktree --source "$GITHUB_SHA" -- tools   # the registry's own tools, as main has them
           elif [ "$ROLE" != author ]; then
             echo "::error::No branch $BRANCH; run the author first"; exit 1
           fi
           git log --oneline -1
+
+      # On the attempt's branch: the protocol's text (docs/, schemas/) at the version the attempt began with, which
+      # its branch's protocol.lock names, so that one attempt follows one protocol; the tools at main's version, so
+      # that a fix reaches a branch made before it. A branch from before the protocol had a repository of its own
+      # (2026-11-23) has no protocol.lock and keeps the text it tracks.
+      # The reconcile run compares attempts and is not part of the blind one, so it follows the instructions as
+      # they are now (asari-2009's ran those of four days before, 2026-11-17).
+      - name: Lay the protocol over the attempt's branch
+        run: |
+          branch_ref=$(tr -d '[:space:]' < protocol.lock 2>/dev/null || true)
+          if [ -n "$branch_ref" ] && [ "$branch_ref" != "$PROTOCOL_REF" ]; then
+            git -C .protocol ls-tree -r --name-only "$PROTOCOL_REF" -- docs schemas | xargs rm -f
+            git -C .protocol archive "$branch_ref" -- docs schemas | tar -x
+            echo "Protocol text from $branch_ref, as the attempt began" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          git -C .protocol archive "$PROTOCOL_REF" -- tools | tar -x
+          if [ "$ROLE" = reconcile ]; then
+            git -C .protocol archive "$PROTOCOL_REF" -- docs/agents/reconcile.md docs/protocol.md schemas | tar -x
+          fi
+          rm -rf .protocol
 
       # The reconcile run compares this attempt's code with the earlier attempt's (docs/protocol.md, "Repeat
       # attempts"). The new entry replaced the earlier one on the branch, and the checkout has no history, so the
@@ -514,6 +519,18 @@ jobs:
         with:
           fetch-depth: 1   # no step reads history, and all of it is ~930 MB (two jobs a run, eleven runs a chain)
 
+      - uses: actions/checkout@v4
+        with:
+          repository: encorescience/encore-protocol
+          path: .protocol
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Lay the protocol's tools over the registry, at main's version
+        run: |
+          git -C .protocol archive "$(git show "$GITHUB_SHA:protocol.lock" | tr -d '[:space:]')" -- tools | tar -x
+          rm -rf .protocol
+
       - uses: actions/download-artifact@v4
         with:
           # Named for the dataset and role: in a pipeline, several datasets run inside one
@@ -528,7 +545,7 @@ jobs:
           # Take the archiving script from the workflow's own ref: a branch made before it existed lacks it.
           cp tools/archive_transcripts.sh "$RUNNER_TEMP/"
           if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null; then
-            git fetch --depth 1 origin "$BRANCH" && git checkout -B "$BRANCH" FETCH_HEAD
+            git fetch --depth 1 origin "$BRANCH" && git checkout -f -B "$BRANCH" FETCH_HEAD
           else
             git checkout -b "$BRANCH"
           fi

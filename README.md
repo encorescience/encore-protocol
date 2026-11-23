@@ -11,13 +11,25 @@ This repository holds the protocol that Encore runs to test a paper's claims aga
 | `schemas/` | The schemas of the claims, attempts and entries the protocol writes. |
 | `tools/` | The code a run uses: prompt assembly, entry execution, the claims check, transcript cleaning and the archive adapters. |
 | `encore_science/` | The `encore` command-line tool, published on PyPI as `encore-science`. |
-| `.github/workflows/` | The workflows that run a paper's attempt. |
+| `.github/workflows/` | The workflows that run one role of an attempt, called from the registry, and the package's publishing. |
 
 ## Relation to the registry
 
-The files keep the paths they had in the registry. The tools find the records through the repository root, so they run in a registry checkout with this repository's files laid over it. The tests run the same way: CI checks out the registry and copies these files over it.
+The registry holds the records and names the protocol version it uses in its `protocol.lock` file. This repository's `docs/`, `schemas/` and `tools/` are laid over a checkout of the registry at that version, and the registry's `.gitignore` keeps them out of its commits. The tools find the records through the repository root, so they run in that combined checkout.
 
-A tagged release of this repository is a protocol version. Each attempt in the registry records the version it ran.
+Three things lay the protocol over the registry:
+
+- The workflows `attempt.yml` and `papers.yml`, which the registry's workflows of the same names call at the pinned version. An attempt's branch keeps the protocol text it began with, from the `protocol.lock` on that branch. The tools always come at the version main names.
+- The registry's own workflows and its queue runner, through `tools/protocol.sh` in the registry.
+- The `encore` command-line tool, for a run on your own machine.
+
+The tests run the same way: CI checks out the registry and copies these files over it.
+
+## Versions
+
+A tag `v<major>.<minor>.<patch>` is a protocol version. To move the registry to a new one, tag it here, then change `protocol.lock` and the version in the registry's `attempt.yml` and `papers.yml` in one pull request. The registry's CI checks that the three agree.
+
+A tag `encore-v<version>` publishes the `encore-science` package to PyPI (`publish-encore.yml`).
 
 ## History
 

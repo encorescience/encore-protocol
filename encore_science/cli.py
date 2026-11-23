@@ -107,7 +107,7 @@ def main(argv: list[str] | None = None) -> int:
     c.add_argument("--version", dest="version", help="for an archive dataset: the version to use")
     c.add_argument("--out", help="where the run and its report go (default: ./encore-<name>-<date>)")
     c.add_argument("--model", default=MODEL)
-    c.add_argument("--ref", default="main", help="the registry's branch or tag to take the protocol from")
+    c.add_argument("--ref", default="main", help="the registry's branch or tag to copy; the protocol comes at the version its protocol.lock names")
     c.add_argument("--no-sandbox", action="store_true", help="run the agents' commands outside Claude Code's sandbox")
     c.set_defaults(func=check)
 
