@@ -147,3 +147,14 @@ def test_an_attempts_branch_keeps_the_protocol_text_it_began_with_and_takes_main
     assert set(lay("author", "v2").values()) == {"new", "v2"}
     old_branch = lay("author", "")
     assert old_branch["docs/protocol.md"] == "tracked" and old_branch["tools/agent_run.py"] == "new"
+
+
+def test_every_input_the_registry_passes_is_declared():
+    # The registry's papers.yml passed papers_only, which this one declared only for workflow_dispatch: every run of
+    # it failed at startup (2026-11-23). The registry's workflows pass these inputs, named in its own workflow_dispatch.
+    import yaml
+    passed = {"attempt.yml": {"paper", "dataset", "dandiset", "role", "model", "version", "account", "replicate"},
+              "papers.yml": {"dataset", "paper", "dandiset", "role", "papers_only", "model", "account", "replicate"}}
+    for name, inputs in passed.items():
+        declared = set(yaml.safe_load((WORKFLOWS / name).read_text())[True]["workflow_call"]["inputs"])
+        assert inputs <= declared, (name, inputs - declared)
