@@ -1,6 +1,6 @@
 # Encore protocol
 
-This repository holds the protocol that Encore runs to test a paper's claims against its open data. The records it produces live in the registry, [encorescience/encore](https://github.com/encorescience/encore), and are published at [encorescience.org](https://encorescience.org).
+This repository holds the protocol that Encore runs to test a paper's claims against its open data. The records it produces live in the registry, [encorescience/encore-registry](https://github.com/encorescience/encore-registry), and are published at [encorescience.org](https://encorescience.org).
 
 ## Contents
 
@@ -21,7 +21,7 @@ A tagged release of this repository is a protocol version. Each attempt in the r
 
 ## History
 
-These files were split out of the registry on 2026-11-23 with their history. A reference such as `encorescience/encore#855` in an older commit message points to a pull request in the registry.
+These files were split out of the registry on 2026-11-23 with their history. A reference such as `encorescience/encore-registry#855` in an older commit message points to a pull request in the registry.
 
 ## License
 

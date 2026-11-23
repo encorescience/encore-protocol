@@ -22,13 +22,13 @@ jobs:
 
       - uses: actions/checkout@v4
         with:
-          repository: encorescience/encore
+          repository: encorescience/encore-registry
           path: registry
 
       - name: Lay the protocol over the registry
         run: |
           cd protocol
-          git ls-files -z | grep -zv '^\.github/' | xargs -0 -I{} cp --parents {} ../registry/
+          git ls-files -z | grep -zvE '^(\.github/|README\.md$)' | xargs -0 -I{} cp --parents {} ../registry/
 
       - uses: actions/setup-python@v5
         with:
