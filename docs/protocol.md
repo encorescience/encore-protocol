@@ -6,7 +6,7 @@ This is what agents, or people, do to attempt a target and deposit the
 result. A target is a dataset in a public archive and a paper it names. How
 each archive's datasets are named, versioned and read is in
 [archives.md](archives.md); the examples here are from DANDI, the first. It is written from the pilot attempts
-([pilot notes](pilot-notes.md)); the reasons for the rules are there.
+([pilot notes](https://github.com/encorescience/encore-registry/blob/main/docs/pilot-notes.md)); the reasons for the rules are there.
 
 An attempt has three roles, each a separate run with a separate context:
 
@@ -33,7 +33,7 @@ write the claims file. The other runs are made with the
 file, `verifier-1`, `author-revise-1`, `verifier-2`, `author-revise-2`, and,
 when the last of these proposes changes of outcome, `verifier-3` and `author-revise-3`. Each run's
 transcript and final report are kept in
-[`transcripts/<paper>/`](../transcripts). Records are filed under the paper's
+[`transcripts/<paper>/`](https://github.com/encorescience/encore-registry/tree/main/transcripts). Records are filed under the paper's
 key, its first author's surname and year (`tingley-2021`; papers/keys.yaml),
 and the datasets it is tested on are listed in `papers/datasets/<paper>.yaml`
 ([paper-first.md](paper-first.md)). A dataset's folder name is its identifier
