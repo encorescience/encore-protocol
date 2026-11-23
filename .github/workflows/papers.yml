@@ -45,6 +45,9 @@ on:
       replicate:
         type: string
         default: ""
+      papers_only:
+        type: boolean
+        default: false
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
         required: true
