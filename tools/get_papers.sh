@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Copy a dataset's papers from the private paper store into a directory.
 #
-#   PAPERS_DEPLOY_KEY=... tools/get_papers.sh FOLDER[,FOLDER...] DEST [DOI]     (000147, or <archive>-<id>)
+#   PAPERS_DEPLOY_KEY=... [ENCORE_PAPERS_REPO=owner/name] tools/get_papers.sh FOLDER[,FOLDER...] DEST [DOI]
 #
 # With DOI, only that paper's files (its text, PDF and supplements, named by the DOI) and the datasets' data
 # descriptors: a dataset's folder also holds the papers of the others tested on it, which this run is not about
@@ -19,7 +19,10 @@ trap 'rm -rf "$tmp"' EXIT
 printf '%s\n' "$PAPERS_DEPLOY_KEY" > "$key"; chmod 600 "$key"
 export GIT_SSH_COMMAND="ssh -i $key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
 export GIT_LFS_SKIP_SMUDGE=1
-git clone -q --depth 1 --filter=blob:none --sparse git@github.com:catalystneuro/registry-papers.git "$store"
+# The store is CatalystNeuro's unless the caller names its own (ENCORE_PAPERS_REPO, owner/name; docs/outside-runs.md).
+repo=${ENCORE_PAPERS_REPO:-catalystneuro/registry-papers}
+[[ "$repo" =~ ^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$ ]] || { echo "::error::Not a repository: '$repo'"; exit 1; }
+git clone -q --depth 1 --filter=blob:none --sparse "git@github.com:$repo.git" "$store"
 IFS=, read -r -a folders <<<"$dandiset"
 git -C "$store" sparse-checkout set "${folders[@]}"
 git -C "$store" lfs pull --include "$(printf '%s/*,' "${folders[@]}" | sed 's/,$//')" || true

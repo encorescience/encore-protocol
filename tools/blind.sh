@@ -25,7 +25,9 @@ records_of(){ ls attempts/ 2>/dev/null | grep -E "^${d}-[0-9]{2}\.yaml$" | sed '
 if [ "$cmd" = audit ]; then
   # The earlier attempts' ids: every record but the newest, which is this attempt's.
   earlier=$(records_of | sed '$d' | xargs -n 1 basename 2>/dev/null | sed 's/\.yaml$//' | paste -sd '|' -)
-  grep -nE "encorescience\.org|encorescience\.github\.io|encorescience/encore|catalystneuro\.github\.io|reproduction-registry|catalystneuro/encore|attempt-[0-9]{2}/|git (log|show)${earlier:+|$earlier}" \
+  # A run from another organization's copy of the registry (docs/outside-runs.md) could read the record there too.
+  copy=""; case "${GITHUB_REPOSITORY:-}" in ""|encorescience/*|catalystneuro/*) ;; *) copy="|${GITHUB_REPOSITORY//./\\.}";; esac
+  grep -nE "encorescience\.org|encorescience\.github\.io|encorescience/encore|catalystneuro\.github\.io|reproduction-registry|catalystneuro/encore|attempt-[0-9]{2}/|git (log|show)${earlier:+|$earlier}$copy" \
     transcripts/"$d"/author*.md 2>/dev/null || true
   exit 0
 fi

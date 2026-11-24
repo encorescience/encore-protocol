@@ -49,15 +49,27 @@ on:
       account:
         type: string
         default: verified
+      # Outside CatalystNeuro (docs/outside-runs.md): the caller passes its own repository variables here, since a
+      # called workflow cannot be relied on to read them. Empty: CatalystNeuro's paper store, and the accountable
+      # name agent_run.py works out from the repository.
+      papers_repo:
+        type: string
+        default: ""
+      accountable:
+        type: string
+        default: ""
       replicate:
         type: string
         default: ""
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
-        required: true
+        required: false
       CLAUDE_CODE_OAUTH_TOKEN_UNVERIFIED:
         required: false
       ANTHROPIC_API_KEY_CREDITS:
+        required: false
+      # The API key under its usual name, for a caller outside CatalystNeuro (docs/outside-runs.md).
+      ANTHROPIC_API_KEY:
         required: false
 
 permissions:
@@ -94,6 +106,7 @@ jobs:
       started: ${{ steps.agent.outputs.started }}
       folder: ${{ steps.start.outputs.folder }}
       flagged: ${{ steps.flag.outputs.flagged }}
+      account: ${{ steps.acct.outputs.account }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -199,6 +212,8 @@ jobs:
           pip install --no-cache-dir uv pyyaml jsonschema nbformat
 
       - name: Write the prompt
+        env:
+          ENCORE_ACCOUNTABLE: ${{ inputs.accountable }}
         run: |
           python tools/agent_run.py prompt "$ROLE" "$FOLDER" --model "$MODEL" ${VERSION:+--version "$VERSION"} ${REPLICATE:+--replicate} > "$RUNNER_TEMP/prompt.md"
           # The paper's datasets, read now: a verifier's step removes the repository before the papers are fetched.
@@ -276,6 +291,7 @@ jobs:
         if: inputs.role != 'recorder'
         env:
           PAPERS_DEPLOY_KEY: ${{ secrets.PAPERS_DEPLOY_KEY }}
+          ENCORE_PAPERS_REPO: ${{ inputs.papers_repo }}
         run: |
           if [[ "$ROLE" == verifier* ]]; then dest="$RUNNER_TEMP/work/paper"; else dest=paper; fi
           "$RUNNER_TEMP/get_papers.sh" "$DATASETS" "$dest" "$PAPER_DOI"
@@ -323,8 +339,22 @@ jobs:
             !executed/${{ steps.aentry.outputs.name }}/.venv
           key: author-run-${{ steps.aentry.outputs.name }}-${{ steps.aentry.outputs.hash }}
 
+      - name: Choose the account
+        id: acct
+        env:
+          HAS_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
+          HAS_KEY: ${{ (secrets.ANTHROPIC_API_KEY_CREDITS || secrets.ANTHROPIC_API_KEY) != '' }}
+        run: |
+          # Outside CatalystNeuro there is usually one API key and no subscription token (docs/outside-runs.md): a
+          # run asked for on the verified account, the default, then runs on the key. CatalystNeuro's runs, which
+          # have the token, are unchanged.
+          account=$ACCOUNT
+          if [ "$account" = verified ] && [ "$HAS_TOKEN" != true ] && [ "$HAS_KEY" = true ]; then account=api; fi
+          echo "account=$account" >> "$GITHUB_OUTPUT"; echo "ACCOUNT=$account" >> "$GITHUB_ENV"
+          echo "Account: $account" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Check that the unverified account has a token
-        if: ${{ inputs.account == 'unverified' }}
+        if: ${{ steps.acct.outputs.account == 'unverified' }}
         env:
           HAS_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_UNVERIFIED != '' }}
         run: |
@@ -332,16 +362,16 @@ jobs:
           [ "$HAS_TOKEN" = true ] || { echo "::error::UNVERIFIED-UNAVAILABLE: no CLAUDE_CODE_OAUTH_TOKEN_UNVERIFIED secret"; exit 1; }
 
       - name: Check that the api account has its key
-        if: ${{ inputs.account == 'api' }}
+        if: ${{ steps.acct.outputs.account == 'api' }}
         env:
-          HAS_KEY: ${{ secrets.ANTHROPIC_API_KEY_CREDITS != '' }}
+          HAS_KEY: ${{ (secrets.ANTHROPIC_API_KEY_CREDITS || secrets.ANTHROPIC_API_KEY) != '' }}
         run: |
-          [ "$HAS_KEY" = true ] || { echo "::error::API-UNAVAILABLE: no ANTHROPIC_API_KEY_CREDITS secret"; exit 1; }
+          [ "$HAS_KEY" = true ] || { echo "::error::API-UNAVAILABLE: no ANTHROPIC_API_KEY_CREDITS or ANTHROPIC_API_KEY secret"; exit 1; }
 
       - name: Check the token, the permission mode and the agent's shell
         env:
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ inputs.account != 'api' && (inputs.account == 'unverified' && secrets.CLAUDE_CODE_OAUTH_TOKEN_UNVERIFIED || secrets.CLAUDE_CODE_OAUTH_TOKEN) || '' }}
-          ANTHROPIC_API_KEY: ${{ inputs.account == 'api' && secrets.ANTHROPIC_API_KEY_CREDITS || '' }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ steps.acct.outputs.account != 'api' && (steps.acct.outputs.account == 'unverified' && secrets.CLAUDE_CODE_OAUTH_TOKEN_UNVERIFIED || secrets.CLAUDE_CODE_OAUTH_TOKEN) || '' }}
+          ANTHROPIC_API_KEY: ${{ steps.acct.outputs.account == 'api' && (secrets.ANTHROPIC_API_KEY_CREDITS || secrets.ANTHROPIC_API_KEY) || '' }}
           CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: '1'
           DISABLE_AUTOUPDATER: '1'
           DISABLE_TELEMETRY: '1'
@@ -387,8 +417,8 @@ jobs:
         # Shorter than the job's limit, so that the transcript is still exported when it is reached.
         timeout-minutes: 300
         env:
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ inputs.account != 'api' && (inputs.account == 'unverified' && secrets.CLAUDE_CODE_OAUTH_TOKEN_UNVERIFIED || secrets.CLAUDE_CODE_OAUTH_TOKEN) || '' }}
-          ANTHROPIC_API_KEY: ${{ inputs.account == 'api' && secrets.ANTHROPIC_API_KEY_CREDITS || '' }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ steps.acct.outputs.account != 'api' && (steps.acct.outputs.account == 'unverified' && secrets.CLAUDE_CODE_OAUTH_TOKEN_UNVERIFIED || secrets.CLAUDE_CODE_OAUTH_TOKEN) || '' }}
+          ANTHROPIC_API_KEY: ${{ steps.acct.outputs.account == 'api' && (secrets.ANTHROPIC_API_KEY_CREDITS || secrets.ANTHROPIC_API_KEY) || '' }}
           CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: '1'
           CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1'
           DISABLE_AUTOUPDATER: '1'
@@ -404,6 +434,9 @@ jobs:
           # The registry's published record of earlier attempts, kept from a blind author (tools/blind.sh).
           not_tools=$NOT_TOOLS
           [[ "$ROLE" != author* ]] || not_tools+=",WebFetch(domain:encorescience.org),WebFetch(domain:catalystneuro.github.io),WebFetch(domain:encorescience.github.io)"
+          # Run from another organization's copy of the registry (docs/outside-runs.md), that copy's pages too.
+          owner=${GITHUB_REPOSITORY_OWNER,,}
+          [[ "$ROLE" != author* || "$owner" == encorescience || "$owner" == catalystneuro ]] || not_tools+=",WebFetch(domain:$owner.github.io)"
           claude -p "$(cat "$RUNNER_TEMP/prompt.md")" \
             --model "$MODEL" \
             --output-format stream-json --verbose --forward-subagent-text \
@@ -513,6 +546,7 @@ jobs:
       contents: write
     env:
       FOLDER: ${{ needs.run.outputs.folder }}
+      ACCOUNT: ${{ needs.run.outputs.account || inputs.account || 'verified' }}
       BRANCH: ${{ inputs.replicate && format('replicate/{0}/{1}', needs.run.outputs.folder, inputs.replicate) || format('attempt/{0}', needs.run.outputs.folder) }}
     steps:
       - uses: actions/checkout@v4
