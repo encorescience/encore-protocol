@@ -35,7 +35,7 @@ The signature establishes which workflow made a submission, where, and from whic
 
 ## Who Can Do What
 
-Submissions from encore-runner itself go on the attempt's branch as soon as they pass. Submissions from a fork pass the same checks and then wait until a person at CatalystNeuro approves them, so that the registry's verifiers spend nothing on a run nobody has looked at. The registry's variable `ENCORE_INTAKE_AUTO` lists the repositories whose submissions go straight on; adding a fork to it, or setting it to `*`, lets that fork's runs, or every fork's, go straight on too.
+Submissions from encore-runner itself go on the attempt's branch as soon as they pass: encore-runner starts the intake at the end of each run. A fork's owner sends a run with the registry's "Outside run" issue form, giving the run's address. Its submission passes the same checks and then waits until someone in the registry's `queue/priority.yaml` approves it with the `approved` label, so that the registry's verifiers spend nothing on a run nobody has looked at. The intake comments on the issue with what it found, and closes it once the run is taken. The registry's variable `ENCORE_INTAKE_AUTO` lists the repositories whose submissions go straight on; adding a fork to it, or setting it to `*`, lets that fork's runs, or every fork's, go straight on too.
 
 An organization's runs and its API key stay in its own account; CatalystNeuro never holds its key. The organization cannot write to the registry: its runs read it, and the intake writes what they made. CatalystNeuro's runs after the author use CatalystNeuro's accounts and paper store.
 
