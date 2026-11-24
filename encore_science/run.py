@@ -43,9 +43,19 @@ FULL = QUICK + ("answer", "author-answers", "verifier-1", "author-revise-1", "ve
 NETWORK = ["pypi.org", "files.pythonhosted.org", "github.com", "*.githubusercontent.com", "doi.org", "*.doi.org"]
 ARCHIVE_HOSTS = ["dandiarchive.org", "*.dandiarchive.org", "*.amazonaws.com", "crcns.org", "*.ebrains.eu"]
 DOI = re.compile(r"\b(10\.[0-9]{4,9}/[^\s\"<>]+)")
-# The one finished attempt the prompts point to for file formats. Every other dataset's work is taken out of a
-# run's copy of the registry, so that no agent can read another attempt on the same paper or data.
-EXAMPLE = {"claims": "001453", "entries": "001453-fouke-2025", "attempts": "001453-fouke-2025-01.yaml"}
+# The one finished attempt the prompts point to for file formats (docs/agents/author.md). Every other dataset's work
+# is taken out of a run's copy of the registry, so that no agent can read another attempt on the same paper or data.
+EXAMPLE = {"claims": "fouke-2025.yaml", "entries": "fouke-2025", "attempts": "fouke-2025-01.yaml"}
+PRUNED = ("claims", "entries", "attempts", "questions", "transcripts")
+
+
+def sparse_patterns() -> str:
+    """What a run fetches of the registry, as patterns for git's sparse checkout: everything but the work that
+    prune() takes out, which is most of the registry's size and grows with every attempt."""
+    lines = ["/*"]
+    for kind in PRUNED:
+        lines += [f"!/{kind}/*", f"/{kind}/.gitkeep"] + ([f"/{kind}/{EXAMPLE[kind]}"] if kind in EXAMPLE else [])
+    return "\n".join(lines + ["!/docs/pilot-notes/"]) + "\n"
 
 
 class Stop(Exception):
@@ -108,21 +118,39 @@ def dataset_of(spec: str, version: str = "") -> Dataset:
     return Dataset(archive, id_, f"{archive}:{id_}", "", version)
 
 
-def cached_clone(url: str, name: str, ref: str) -> Path:
-    """A cached shallow clone of URL at REF (a branch, a tag or a commit), brought up to date."""
+def cached_clone(url: str, name: str, ref: str, sparse: str | None = None) -> Path:
+    """A cached shallow clone of URL at REF (a branch, a tag or a commit), brought up to date. With SPARSE (patterns
+    for git's sparse checkout), only the files they match are checked out, and only those files are downloaded."""
     cache = Path(os.environ.get("ENCORE_CACHE") or Path.home() / ".cache" / "encore") / name
+    sparse_before = subprocess.run(["git", "config", "--get", "core.sparseCheckout"], cwd=cache,
+                                   capture_output=True, text=True).stdout.strip() if (cache / ".git").exists() else ""
+    if sparse and (cache / ".git").exists() and sparse_before != "true":
+        shutil.rmtree(cache)   # a full clone, from before runs fetched only what they keep
     if not (cache / ".git").exists():
         cache.mkdir(parents=True, exist_ok=True)
         git("init", "-q", cwd=cache)
         git("remote", "add", "origin", url, cwd=cache)
-    git("fetch", "-q", "--depth", "1", "origin", ref, cwd=cache)
+        if sparse:
+            git("config", "core.sparseCheckout", "true", cwd=cache)
+    if sparse:
+        (cache / ".git" / "info").mkdir(exist_ok=True)
+        (cache / ".git" / "info" / "sparse-checkout").write_text(sparse)
+        try:   # leave out the files' contents, then fetch only those the checkout needs
+            git("fetch", "-q", "--depth", "1", "--filter=blob:none", "origin", ref, cwd=cache)
+        except subprocess.CalledProcessError:   # a git from before partial clones (2.19): everything, as before
+            git("fetch", "-q", "--depth", "1", "origin", ref, cwd=cache)
+    else:
+        git("fetch", "-q", "--depth", "1", "origin", ref, cwd=cache)
     git("checkout", "-q", "-f", "FETCH_HEAD", cwd=cache)
+    if sparse:   # patterns that changed since the last checkout
+        git("read-tree", "-mu", "HEAD", cwd=cache)
     return cache
 
 
 def registry_source(ref: str) -> Path:
-    """The registry to copy for a run: a cached clone of the public repository at REF."""
-    return cached_clone(REPO_URL, "registry", ref)
+    """The registry to copy for a run: a cached clone of the public repository at REF, without the work that a
+    run's copy leaves out (sparse_patterns)."""
+    return cached_clone(REPO_URL, "registry", ref, sparse_patterns())
 
 
 def protocol_source(ref: str) -> Path:
@@ -191,10 +219,18 @@ class Run:
         shutil.rmtree(self.registry, ignore_errors=True)   # a setup that stopped part-way
         source = registry_source(self.ref)
         say(f"Copying the registry from {source}")
-        git("clone", "-q", str(source), str(self.registry))
-        git("checkout", "-q", "-b", f"encore/{self.dataset.folder}", cwd=self.registry)
+        # The files the cache checked out, in a repository of their own: a clone of the cache would need the
+        # contents of every file it left out.
+        shutil.copytree(source, self.registry, ignore=lambda d, names: [".git"] if Path(d) == source else [])
+        for kind in PRUNED:
+            (self.registry / kind).mkdir(exist_ok=True)
+        git("init", "-q", cwd=self.registry)
+        git("symbolic-ref", "HEAD", f"refs/heads/encore/{self.dataset.folder}", cwd=self.registry)
         git("config", "user.name", "encore", cwd=self.registry)
         git("config", "user.email", "encore@localhost", cwd=self.registry)
+        git("add", "-A", "-f", cwd=self.registry)   # -f: the cache holds only the registry's own files
+        git("commit", "-q", "-m", f"encore-registry at {git('rev-parse', 'HEAD', cwd=source).strip()}",
+            cwd=self.registry)
         # A registry from before the protocol had a repository of its own (2026-11-23) has no protocol.lock and
         # holds the protocol itself.
         lock = self.registry / "protocol.lock"
@@ -222,13 +258,14 @@ class Run:
             target["path" if d.archive == "local" else "url"] = d.location
             (self.registry / "targets" / "local.json").write_text(json.dumps({"targets": [target]}, indent=1))
         self.state = {"prepared": True, "dataset": d.__dict__, "folder": d.folder, "doi": doi, "title": title,
+                      "key": self.paper_key(),
                       "mode": "full" if self.full else "quick", "model": self.model, "protocol": protocol, "protocol_ref": protocol_ref,
                       "source": str(source), "started": now(), "roles": {}}
         self.save()
 
     def prune(self) -> None:
         """Take every other dataset's claims, entries, attempts, questions and transcripts out of the copy."""
-        for kind in ("claims", "entries", "attempts", "questions", "transcripts"):
+        for kind in PRUNED:
             for path in (self.registry / kind).glob("*"):
                 if path.name != EXAMPLE.get(kind) and path.name != ".gitkeep":
                     shutil.rmtree(path) if path.is_dir() else path.unlink()
@@ -242,12 +279,32 @@ class Run:
         if readme.is_file():
             readme.write_text("".join(line for line in readme.read_text().splitlines(keepends=True)
                                       if not re.match(r"^\| \[", line)))
-        git("add", "-A", "--", *[p for p in ("claims", "entries", "attempts", "questions", "transcripts", "docs",
-                                              "README.md") if (self.registry / p).exists()], cwd=self.registry)
-        git("commit", "-q", "-m", "encore check: only the example attempt", cwd=self.registry)
+        git("add", "-A", "--", *[p for p in (*PRUNED, "docs", "README.md") if (self.registry / p).exists()],
+            cwd=self.registry)
+        if subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=self.registry).returncode:
+            git("commit", "-q", "-m", "encore check: only the example attempt", cwd=self.registry)
 
     def save(self) -> None:
         self.state_path.write_text(json.dumps(self.state, indent=1))
+
+    def paper_key(self) -> str:
+        """The name the registry keeps this run's records under (claims/<key>.yaml, transcripts/<key>/, ...): the
+        paper's key, which for a dataset no paper lists yet is the dataset's folder (tools/paper_records.py). A
+        registry from before papers had keys keeps them under the dataset's folder."""
+        tool = self.registry / "tools" / "paper_records.py"
+        if not tool.is_file():
+            return self.dataset.folder
+        found = subprocess.run([sys.executable, str(tool), "key", self.dataset.folder], cwd=self.registry,
+                               capture_output=True, text=True, env=self.env())
+        if found.returncode:
+            raise Stop(f"The registry found no paper for {self.dataset.folder}: {found.stderr.strip()}")
+        return found.stdout.strip()
+
+    @property
+    def key(self) -> str:
+        if not self.state.get("key"):   # a run prepared by an earlier version
+            self.state["key"] = self.paper_key()
+        return self.state["key"]
 
     # Running roles ----------------------------------------------------------------------------------------
 
@@ -318,7 +375,7 @@ class Run:
         return agent.returncode
 
     def transcript(self, role: str) -> None:
-        dest = self.registry / "transcripts" / self.dataset.folder
+        dest = self.registry / "transcripts" / self.key
         dest.mkdir(parents=True, exist_ok=True)
         subprocess.run([sys.executable, str(self.registry / "tools" / "transcript.py"), str(self.logs / f"{role}.jsonl"),
                         str(dest / f"{role}.md"), "--omit", "paper/", "--report", str(dest / f"{role}-report.md"),
@@ -383,8 +440,8 @@ class Run:
 
     def claims_ready(self) -> bool:
         import yaml
-        from .report import files_in
-        files = files_in(self.registry / "claims" / self.dataset.folder, "*.yaml")
+        from .report import claims_files
+        files = claims_files(self.registry, self.key)
         if not files:
             return False
         checks = (yaml.safe_load(files[0].read_text()) or {}).get("checks") or [{}]
@@ -392,7 +449,7 @@ class Run:
 
     def open_questions(self) -> int:
         import yaml
-        path = self.registry / "questions" / f"{self.dataset.folder}.yaml"
+        path = self.registry / "questions" / f"{self.key}.yaml"
         if not path.is_file():
             return 0
         q = yaml.safe_load(path.read_text()) or []
@@ -409,13 +466,14 @@ class Run:
         # The claims, unless the registry already has a checked claims file for this dataset (an archive's).
         if not self.claims_ready() or self.state["roles"].get("claims"):
             self.role("claims")
-            if not (self.registry / "claims" / self.dataset.folder).is_dir():
+            from .report import claims_files
+            if not claims_files(self.registry, self.key):
                 raise Stop("The reader wrote no claims file: see "
-                           f"{self.registry / 'transcripts' / self.dataset.folder / 'claims-report.md'}.")
+                           f"{self.registry / 'transcripts' / self.key / 'claims-report.md'}.")
             self.role("claims-check")
             if not self.claims_ready():
                 raise Stop("The claims check says the claims file is not ready: see "
-                           f"{self.registry / 'transcripts' / self.dataset.folder / 'claims-check-report.md'}.")
+                           f"{self.registry / 'transcripts' / self.key / 'claims-check-report.md'}.")
         self.role("author")
         if self.full:
             if self.open_questions() or self.state["roles"].get("answer"):

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -132,9 +133,9 @@ def test_macos_metadata_files_beside_the_claims_and_attempts_are_skipped(tmp_pat
 
 def test_a_run_keeps_only_the_example_attempt(tmp_path):
     reg = tmp_path / "out" / "registry"
-    for path in ("claims/001453/a.yaml", "claims/001754/b.yaml", "entries/001453-fouke-2025/x.ipynb",
-                 "entries/001754-knierim-2000/y.ipynb", "attempts/001453-fouke-2025-01.yaml",
-                 "attempts/001754-knierim-2000-01.yaml", "transcripts/001754/author.md", "questions/001754.yaml"):
+    for path in ("claims/fouke-2025.yaml", "claims/knierim-2000.yaml", "entries/fouke-2025/x.ipynb",
+                 "entries/knierim-2000/y.ipynb", "attempts/fouke-2025-01.yaml",
+                 "attempts/knierim-2000-01.yaml", "transcripts/knierim-2000/author.md", "questions/knierim-2000.yaml"):
         (reg / path).parent.mkdir(parents=True, exist_ok=True)
         (reg / path).write_text("x")
     run.git("init", "-q", str(reg))
@@ -144,7 +145,53 @@ def test_a_run_keeps_only_the_example_attempt(tmp_path):
     r = run.Run(tmp_path / "out", run.Dataset("local", "x", "/d", "files-1"), None, None, None, False, "m", "main")
     r.prune()
     left = sorted(p.relative_to(reg).as_posix() for p in reg.rglob("*") if p.is_file() and ".git" not in p.parts)
-    assert left == ["attempts/001453-fouke-2025-01.yaml", "claims/001453/a.yaml", "entries/001453-fouke-2025/x.ipynb"]
+    assert left == ["attempts/fouke-2025-01.yaml", "claims/fouke-2025.yaml", "entries/fouke-2025/x.ipynb"]
+
+
+def _registry_repo(path: Path) -> str:
+    """A small registry to fetch from, served as a remote that allows partial clones."""
+    for name in ("claims/fouke-2025.yaml", "claims/knierim-2000.yaml", "entries/fouke-2025/x.ipynb",
+                 "entries/knierim-2000/y.ipynb", "attempts/fouke-2025-01.yaml", "attempts/knierim-2000-01.yaml",
+                 "transcripts/knierim-2000/author.md", "questions/knierim-2000.yaml", "docs/pilot-notes/k.md",
+                 "docs/pilot-notes.md", "tools/agent_run.py", "targets/dandisets.json", "papers/datasets/k.yaml",
+                 "README.md"):
+        (path / name).parent.mkdir(parents=True, exist_ok=True)
+        (path / name).write_text(name)
+    run.git("init", "-q", str(path))
+    run.git("config", "uploadpack.allowFilter", "true", cwd=path)
+    run.git("add", "-A", cwd=path)
+    run.git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init", cwd=path)
+    return path.as_uri()
+
+
+def _files(directory: Path) -> list[str]:
+    return sorted(p.relative_to(directory).as_posix() for p in directory.rglob("*")
+                  if p.is_file() and ".git" not in p.parts)
+
+
+def test_the_registry_is_fetched_without_other_datasets_work(tmp_path, monkeypatch):
+    url = _registry_repo(tmp_path / "remote")
+    monkeypatch.setenv("ENCORE_CACHE", str(tmp_path / "cache"))
+    cache = run.cached_clone(url, "registry", "HEAD", run.sparse_patterns())
+    assert _files(cache) == ["README.md", "attempts/fouke-2025-01.yaml", "claims/fouke-2025.yaml",
+                             "docs/pilot-notes.md", "entries/fouke-2025/x.ipynb", "papers/datasets/k.yaml",
+                             "targets/dandisets.json", "tools/agent_run.py"]
+    # the contents of the files left out were never fetched
+    missing = run.git("rev-list", "--objects", "--missing=print", "HEAD", cwd=cache)
+    assert sum(line.startswith("?") for line in missing.splitlines()) == 6
+    # a second run reuses the cache
+    assert _files(run.cached_clone(url, "registry", "HEAD", run.sparse_patterns())) == _files(cache)
+
+
+def test_a_full_cache_from_before_is_fetched_again(tmp_path, monkeypatch):
+    url = _registry_repo(tmp_path / "remote")
+    monkeypatch.setenv("ENCORE_CACHE", str(tmp_path / "cache"))
+    old = run.cached_clone(url, "registry", "HEAD")   # as an earlier version cloned it
+    assert "transcripts/knierim-2000/author.md" in _files(old)
+    cache = run.cached_clone(url, "registry", "HEAD", run.sparse_patterns())
+    assert "transcripts/knierim-2000/author.md" not in _files(cache) and "claims/fouke-2025.yaml" in _files(cache)
+    assert run.git("count-objects", "-v", cwd=cache).count("size-pack: 0") == 0
+    assert run.git("rev-list", "--objects", "--missing=print", "HEAD", cwd=cache).count("\n?") == 6
 
 
 def test_the_protocol_is_laid_over_a_copy_of_the_registry(tmp_path):
@@ -162,3 +209,39 @@ def test_the_protocol_is_laid_over_a_copy_of_the_registry(tmp_path):
     assert all((registry / folder / "sub" / "file.txt").read_text() == f"protocol {folder}" for folder in LAID)
     assert (registry / "docs" / "queue.md").read_text() == "the registry's own"
     assert not (registry / "tools" / "__pycache__").exists() and not (registry / "README.md").exists()
+
+
+def test_a_run_reads_the_paper_first_layout(tmp_path):
+    reg = tmp_path / "out" / "registry"
+    (reg / "attempts").mkdir(parents=True)
+    (reg / "claims").mkdir()
+    (reg / "questions").mkdir()
+    (reg / "claims" / "local-x.yaml").write_text(
+        "checks:\n- ready: true\nclaims:\n- id: rate\n  statement: Rates rose.\n")
+    (reg / "questions" / "local-x.yaml").write_text("- question: Is rate per trial?\n")
+    (reg / "attempts" / "local-x-01.yaml").write_text(
+        "id: local-x-01\nentry: local-x\noutcomes:\n- claim: rate\n  outcome: reproduced\n")
+    r = run.Run(tmp_path / "out", run.Dataset("local", "x", "/d", "files-1"), None, None, None, False, "m", "main")
+    r.state = {"key": "local-x"}
+    assert r.claims_ready() and r.open_questions() == 1
+    state = {"folder": "local-x", "key": "local-x", "title": "Smith 2024", "doi": "10.1/x", "mode": "quick",
+             "model": "m", "protocol": "p", "finished": "2026-11-24T12:00", "dataset": {"location": "/d"},
+             "roles": {"author": {"status": "success"}}}
+    text = report.write_report(tmp_path, reg, state).read_text()
+    assert "## Claims: 1 reproduced" in text and "Rates rose." in text and "Open questions: 1" in text
+    assert "`registry/claims/local-x.yaml`" in text and "`registry/transcripts/local-x/`" in text
+
+
+def test_a_run_finds_its_paper_key_in_the_registry(tmp_path):
+    reg = tmp_path / "out" / "registry"
+    r = run.Run(tmp_path / "out", run.Dataset("local", "x", "/d", "files-1"), None, None, None, False, "m", "main")
+    reg.mkdir(parents=True)
+    assert r.paper_key() == "local-x"   # a registry from before papers had keys
+    shutil.copytree(REPO / "tools", reg / "tools")
+    (reg / "targets").mkdir()
+    (reg / "papers").mkdir()
+    (reg / "papers" / "triage.yaml").write_text("{}\n")
+    (reg / "targets" / "local.json").write_text(json.dumps({"targets": [
+        {"archive": "local", "id": "x", "name": "Smith 2024", "path": "/d", "fingerprint": "files-1",
+         "papers": [{"doi": "10.1/x", "title": "Smith 2024", "preprint": False}]}]}))
+    assert r.paper_key() == "local-x"   # a dataset no paper lists: its records go under its folder
