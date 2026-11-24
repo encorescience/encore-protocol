@@ -19,7 +19,8 @@ dependencies = [
 
 [project.urls]
 Homepage = "https://encorescience.org"
-Source = "https://github.com/encorescience/encore-registry"
+Source = "https://github.com/encorescience/encore-protocol"
+Registry = "https://github.com/encorescience/encore-registry"
 
 [project.scripts]
 encore = "encore_science.cli:main"
