@@ -58,6 +58,13 @@ on:
       accountable:
         type: string
         default: ""
+      # A run from encore-runner, or a fork of it (docs/outside-runs.md): the registry it reads, which it cannot
+      # write to. The run starts from the attempt's branch there, and its results are signed and uploaded as a
+      # submission (the `submit` job) for the registry's intake to take; nothing is pushed. Empty: the caller is the
+      # registry itself, and the run commits to the attempt's branch (the `commit` job).
+      registry:
+        type: string
+        default: ""
       replicate:
         type: string
         default: ""
@@ -86,6 +93,7 @@ env:
   ACCOUNT: ${{ inputs.account || 'verified' }}
   VERSION: ${{ inputs.version }}
   REPLICATE: ${{ inputs.replicate }}
+  REGISTRY: ${{ inputs.registry }}
   CLAUDE_CODE_VERSION: 2.1.284
   # The tools the agent may use without asking. With CLAUDE_CODE_SUBPROCESS_ENV_SCRUB set, Claude
   # Code forces permission mode `default`, so this list and --permission-prompts none decide what
@@ -107,9 +115,12 @@ jobs:
       folder: ${{ steps.start.outputs.folder }}
       flagged: ${{ steps.flag.outputs.flagged }}
       account: ${{ steps.acct.outputs.account }}
+      base_sha: ${{ steps.start.outputs.base_sha }}
+      protocol_ref: ${{ steps.base.outputs.protocol_ref }}
     steps:
       - uses: actions/checkout@v4
         with:
+          repository: ${{ inputs.registry || github.repository }}
           persist-credentials: false
           fetch-depth: 1   # no step reads history, and all of it is ~930 MB (two jobs a run, eleven runs a chain)
 
@@ -124,9 +135,13 @@ jobs:
           persist-credentials: false
 
       - name: Lay the protocol over the registry, at main's version
+        id: base
         run: |
-          ref=$(git show "$GITHUB_SHA:protocol.lock" | tr -d '[:space:]')
-          echo "PROTOCOL_REF=$ref" >> "$GITHUB_ENV"
+          # Main's commit: the caller's own, or the registry's main for a run from encore-runner.
+          main=$(git rev-parse HEAD)
+          ref=$(git show "$main:protocol.lock" | tr -d '[:space:]')
+          { echo "PROTOCOL_REF=$ref"; echo "MAIN_SHA=$main"; } >> "$GITHUB_ENV"
+          echo "protocol_ref=$ref" >> "$GITHUB_OUTPUT"
           git -C .protocol archive "$ref" -- docs schemas tools | tar -x
           echo "Protocol $ref ($(git -C .protocol rev-parse --short "$ref^{commit}"))" >> "$GITHUB_STEP_SUMMARY"
 
@@ -144,14 +159,33 @@ jobs:
           fi
           { echo "FOLDER=$FOLDER"; echo "BRANCH=$BRANCH"; } >> "$GITHUB_ENV"
           echo "folder=$FOLDER" >> "$GITHUB_OUTPUT"
+          if [ -n "$REGISTRY" ]; then
+            # From encore-runner, or a fork of it (docs/outside-runs.md): the author's first run of an attempt, and
+            # nothing else; the verification rounds and what follows them run in the registry. The author starts from
+            # this repository's own attempt branch in the registry (the claims it delivered), or from the claims main has.
+            [[ "$REGISTRY" =~ ^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$ ]] || { echo "::error::Not a repository: '$REGISTRY'"; exit 1; }
+            [ "$ROLE" = author ] && [ -z "$REPLICATE" ] \
+              || { echo "::error::From encore-runner, attempt.yml runs the author only, with no replicate; $ROLE runs in the registry"; exit 1; }
+          fi
           if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null; then
             git fetch --depth 1 origin "$BRANCH" && git checkout -f -B "$BRANCH" FETCH_HEAD
             # The registry's tools as the workflow has them, not as the branch had them when its attempt began: a
             # branch made before a fix would otherwise run without it. Working files only, so they are never committed.
-            git restore --worktree --source "$GITHUB_SHA" -- tools   # the registry's own tools, as main has them
+            git restore --worktree --source "$MAIN_SHA" -- tools   # the registry's own tools, as main has them
           elif [ "$ROLE" != author ]; then
             echo "::error::No branch $BRANCH; run the author first"; exit 1
           fi
+          if [ -n "$REGISTRY" ] && [ "$(git branch --show-current)" = "$BRANCH" ]; then
+            # The registry's intake names, on each commit it makes to an attempt's branch, the repository whose run it
+            # took (Encore-Source). A run continues only an attempt that its own repository's runs began.
+            source=$(git log -1 --format='%(trailers:key=Encore-Source,valueonly)' | tr -d '[:space:]')
+            [ "$source" = "$GITHUB_REPOSITORY" ] || {
+              echo "::error::The attempt on $FOLDER under way in $REGISTRY is not this repository's (${source:-begun in the registry}); wait for it to finish"; exit 1; }
+          fi
+          if [ -n "$REGISTRY" ] && [ ! -f "claims/$FOLDER.yaml" ]; then
+            echo "::error::$REGISTRY has no claims for $FOLDER: run claims and claims-check, and deliver them, first"; exit 1
+          fi
+          echo "base_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           git log --oneline -1
 
       # On the attempt's branch: the protocol's text (docs/, schemas/) at the version the attempt began with, which
@@ -434,9 +468,6 @@ jobs:
           # The registry's published record of earlier attempts, kept from a blind author (tools/blind.sh).
           not_tools=$NOT_TOOLS
           [[ "$ROLE" != author* ]] || not_tools+=",WebFetch(domain:encorescience.org),WebFetch(domain:catalystneuro.github.io),WebFetch(domain:encorescience.github.io)"
-          # Run from another organization's copy of the registry (docs/outside-runs.md), that copy's pages too.
-          owner=${GITHUB_REPOSITORY_OWNER,,}
-          [[ "$ROLE" != author* || "$owner" == encorescience || "$owner" == catalystneuro ]] || not_tools+=",WebFetch(domain:$owner.github.io)"
           claude -p "$(cat "$RUNNER_TEMP/prompt.md")" \
             --model "$MODEL" \
             --output-format stream-json --verbose --forward-subagent-text \
@@ -540,7 +571,7 @@ jobs:
     needs: run
     # Whenever the agent was started, also when the run was cancelled or failed, so that its
     # transcript and partial work are kept; the commit message says how the run ended.
-    if: always() && needs.run.outputs.started == 'true' && needs.run.outputs.flagged != 'true'
+    if: always() && inputs.registry == '' && needs.run.outputs.started == 'true' && needs.run.outputs.flagged != 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -614,3 +645,100 @@ jobs:
             -m "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
             -m "Account: $ACCOUNT"
           git push origin "$BRANCH"
+
+  # A run from encore-runner, or a fork of it (docs/outside-runs.md), cannot write to the registry. Its results, as the
+  # commit job would have committed them, are gathered into one file (tools/submission.py), which GitHub signs as made
+  # by this workflow, in the caller's repository and run. The registry's intake checks that signature, so that what it
+  # takes was made by this workflow from the commit it names, and was not edited after.
+  submit:
+    needs: run
+    if: always() && inputs.registry != '' && needs.run.outputs.started == 'true' && needs.run.outputs.flagged != 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write       # to sign the submission
+      attestations: write   # to keep the signature with the caller's repository
+    env:
+      FOLDER: ${{ needs.run.outputs.folder }}
+      ACCOUNT: ${{ needs.run.outputs.account || inputs.account || 'verified' }}
+      BASE_SHA: ${{ needs.run.outputs.base_sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.registry }}
+          ref: ${{ needs.run.outputs.base_sha }}   # the registry's commit the run started from
+          persist-credentials: false
+          fetch-depth: 1
+
+      - uses: actions/checkout@v4
+        with:
+          repository: encorescience/encore-protocol
+          path: .protocol
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Lay the protocol's tools over the registry, and take submission.py from this workflow's own version
+        env:
+          WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          git -C .protocol archive "$(tr -d '[:space:]' < protocol.lock)" -- tools | tar -x
+          git -C .protocol show "$WORKFLOW_SHA:tools/submission.py" > "$RUNNER_TEMP/submission.py"
+          rm -rf .protocol
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: agent-run-${{ needs.run.outputs.folder }}-${{ inputs.role }}
+          path: out
+
+      - name: Gather the run's changes, as the commit job would commit them
+        run: |
+          set -euo pipefail
+          # Refuse anything that is not this paper's, as the commit job does.
+          others=$(ls out/transcripts | grep -vx "$FOLDER" || true)
+          [ -z "$others" ] || { echo "::error::Transcripts for other papers: $others"; exit 1; }
+          # As the commit job: an attempt's first run moves the earlier attempt's transcripts aside.
+          if [ "$ROLE" = author ] && { [ ! -e "transcripts/$FOLDER/claims.md" ] || [ -e "transcripts/$FOLDER/recorder.md" ]; }; then
+            tools/archive_transcripts.sh "$FOLDER"
+          fi
+          if [ -s out/changes.patch ]; then
+            allowed="^(attempts/$FOLDER-[0-9]{2}\.yaml$|claims/$FOLDER\.yaml$|entries/$FOLDER/|questions/$FOLDER\.yaml$|questions/$FOLDER/[^/]+\.yaml$)"
+            stray=$(git apply --numstat --exclude=README.md out/changes.patch | cut -f3 | grep -vE "$allowed" || true)
+            [ -z "$stray" ] || { echo "::error::Changes outside paper $FOLDER: $stray"; exit 1; }
+            if git apply --numstat --include=README.md out/changes.patch | grep -q .; then
+              echo "::warning::Left out the change to the registry's README.md, which only the registry changes"
+            fi
+            git apply --index --exclude=README.md out/changes.patch
+          fi
+          # A transcript with nothing but its title means the agent never started; keep it out.
+          for f in out/transcripts/*/*.md; do [ -e "$f" ] || continue; [ "$(wc -l < "$f")" -gt 2 ] || rm "$f"; done
+          cp -r out/transcripts . && git add -A -- claims attempts entries questions transcripts
+          python "$RUNNER_TEMP/submission.py" pack --paper "$FOLDER" --out submission \
+            --meta role="$ROLE" --meta result="${{ needs.run.result }}" --meta account="$ACCOUNT" \
+            --meta registry="$REGISTRY" --meta base_sha="$BASE_SHA" \
+            --meta protocol_ref="${{ needs.run.outputs.protocol_ref }}" --meta repository="$GITHUB_REPOSITORY" \
+            --meta run_id="$GITHUB_RUN_ID" --meta run_attempt="$GITHUB_RUN_ATTEMPT" \
+            --meta run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          python "$RUNNER_TEMP/submission.py" show submission/submission.tar.gz
+
+      - name: Sign the submission
+        id: sign
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: submission/submission.tar.gz
+
+      - name: Keep the signature with the submission
+        run: |
+          cp "${{ steps.sign.outputs.bundle-path }}" submission/submission.sigstore.json
+          {
+            echo "### Submission: $FOLDER, $ROLE"
+            echo "Signed: ${{ steps.sign.outputs.attestation-url }}"
+            echo
+            echo "The registry takes it with its intake workflow, given this run's address:"
+            echo "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: submission
+          path: submission
+          retention-days: 30

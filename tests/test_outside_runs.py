@@ -1,5 +1,5 @@
-"""Runs from another organization, with its own API key and paper store, whose results go to the registry by pull
-request (docs/outside-runs.md)."""
+"""Runs from encore-runner and its forks, with their own API key and paper store, whose results the registry takes
+through its intake (docs/outside-runs.md)."""
 
 from __future__ import annotations
 
@@ -152,18 +152,113 @@ def test_the_author_is_told_who_is_accountable(monkeypatch):
     assert "https://github.com/acme-lab/encore-registry/actions/runs/1" in text
 
 
-def test_the_blind_audit_also_looks_for_the_outside_copy(tmp_path):
-    # The audit is for a repeat attempt's reconcile run: an earlier record and this one.
-    (tmp_path / "attempts").mkdir()
-    for n in ("01", "02"):
-        (tmp_path / "attempts" / f"demo-2020-{n}.yaml").write_text(f"id: demo-2020-{n}\n")
-    (tmp_path / "transcripts" / "demo-2020").mkdir(parents=True)
-    (tmp_path / "transcripts" / "demo-2020" / "author.md").write_text(
-        "fetched https://github.com/acme-lab/encore-registry/blob/main/README.md\n"
-        "fetched https://github.com/acme-labXencore-registry/x\n")
-    audit = lambda repo: subprocess.run(
-        ["bash", str(REPO / "tools" / "blind.sh"), "audit", "demo-2020"], cwd=tmp_path, capture_output=True,
-        text=True, check=True, env={**os.environ, "GITHUB_REPOSITORY": repo}).stdout
-    assert audit("acme-lab/encore-registry").splitlines() == [
-        "1:fetched https://github.com/acme-lab/encore-registry/blob/main/README.md"]
-    assert audit("encorescience/encore-registry") == ""
+# Runs from encore-runner and its forks: they read the registry, push nothing, and sign what they made.
+
+def jobs(name: str) -> dict:
+    return yaml.safe_load((WORKFLOWS / name).read_text())["jobs"]
+
+
+def step(job: dict, name: str) -> dict:
+    return next(s for s in job["steps"] if s.get("name", "").startswith(name))
+
+
+@pytest.mark.parametrize("name", ROLE_WORKFLOWS)
+def test_a_run_from_encore_runner_reads_the_registry_it_names(name):
+    assert load(name)["workflow_call"]["inputs"]["registry"]["default"] == ""
+    checkout = jobs(name)["run"]["steps"][0]
+    assert checkout["with"]["repository"] == "${{ inputs.registry || github.repository }}"
+    assert checkout["with"]["persist-credentials"] is False
+    lay = step(jobs(name)["run"], "Lay the protocol over the registry")["run"]
+    assert 'main=$(git rev-parse HEAD)' in lay and '"$main:protocol.lock"' in lay and "GITHUB_SHA" not in lay
+
+
+@pytest.mark.parametrize("name", ROLE_WORKFLOWS)
+def test_a_run_from_encore_runner_pushes_nothing_and_signs_a_submission(name):
+    j = jobs(name)
+    assert "inputs.registry == ''" in j["commit"]["if"]
+    submit = j["submit"]
+    assert "inputs.registry != ''" in submit["if"]
+    assert submit["permissions"] == {"contents": "read", "id-token": "write", "attestations": "write"}
+    sign = next(s for s in submit["steps"] if s.get("uses", "").startswith("actions/attest-build-provenance"))
+    assert sign["with"]["subject-path"] == "submission/submission.tar.gz"
+    upload = [s for s in submit["steps"] if s.get("uses", "").startswith("actions/upload-artifact")]
+    assert upload[-1]["with"]["name"] == "submission"
+    # The registry is checked out at the commit the run started from, and submission.py comes from this workflow.
+    assert submit["steps"][0]["with"]["repository"] == "${{ inputs.registry }}"
+    assert submit["steps"][0]["with"]["ref"] == "${{ needs.run.outputs.base_sha }}"
+    assert step(submit, "Lay the protocol's tools")["env"]["WORKFLOW_SHA"] == "${{ job.workflow_sha }}"
+    gather = step(submit, "Gather the run's changes")["run"]
+    assert "--meta base_sha=" in gather and "--meta run_url=" in gather
+    assert "git push" not in yaml.safe_dump(submit)
+
+
+def git(cwd: Path, *args: str) -> str:
+    return subprocess.run(["git", "-c", "user.name=t", "-c", "user.email=t@t", *args], cwd=cwd, check=True,
+                          capture_output=True, text=True).stdout
+
+
+@pytest.fixture
+def registry(tmp_path: Path) -> Path:
+    """A registry with a main, and an attempt branch on demo-2020 that the intake made for acme/encore-runner."""
+    src = tmp_path / "src"
+    src.mkdir()
+    git(src, "init", "-q", "-b", "main")
+    (src / "README.md").write_text("registry\n")
+    (src / "tools").mkdir()
+    (src / "tools" / "outside_check.py").write_text("# the registry's own tools\n")
+    git(src, "add", "-A")
+    git(src, "commit", "-qm", "main")
+    git(src, "checkout", "-qb", "attempt/demo-2020")
+    (src / "claims").mkdir()
+    (src / "claims" / "demo-2020.yaml").write_text("paper: demo-2020\n")
+    git(src, "add", "-A")
+    git(src, "commit", "-qm", "Claims for demo-2020", "-m", "Encore-Source: acme/encore-runner")
+    git(src, "checkout", "-q", "main")
+    bare = tmp_path / "registry.git"
+    git(tmp_path, "clone", "-q", "--bare", str(src), str(bare))
+    return bare
+
+
+def run_start(name: str, tmp_path: Path, registry: Path, **env) -> subprocess.CompletedProcess:
+    """The run job's start step, as a shell script, in a checkout of the registry's main."""
+    script = step(jobs(name)["run"], "Start from the attempt's branch")["run"]
+    work = tmp_path / "work"
+    git(tmp_path, "clone", "-q", str(registry), str(work))
+    full = {**os.environ, "GITHUB_OUTPUT": str(tmp_path / "out"), "GITHUB_ENV": str(tmp_path / "env"),
+            "PAPER": "demo-2020", "REPLICATE": "", "DATASET": "", "GITHUB_REPOSITORY": "acme/encore-runner",
+            "MAIN_SHA": git(work, "rev-parse", "HEAD").strip(), **env}
+    return subprocess.run(["bash", "-e", "-c", script], cwd=work, env=full, capture_output=True, text=True)
+
+
+@pytest.mark.parametrize("name,role,repo,paper,ok", [
+    ("papers.yml", "claims", "acme/encore-runner", "new-2021", True),         # a new attempt starts from main
+    ("papers.yml", "claims-check", "acme/encore-runner", "demo-2020", True),  # continues its own attempt
+    ("papers.yml", "claims-check", "other/encore-runner", "demo-2020", False),  # not another repository's
+    ("papers.yml", "claims-check", "acme/encore-runner", "new-2021", False),  # no claims run yet
+    ("papers.yml", "claims", "other/encore-runner", "demo-2020", False),      # an attempt is under way
+    ("papers.yml", "answer", "acme/encore-runner", "demo-2020", False),       # the registry's role
+    ("attempt.yml", "author", "acme/encore-runner", "demo-2020", True),
+    ("attempt.yml", "author", "other/encore-runner", "demo-2020", False),
+    ("attempt.yml", "author", "acme/encore-runner", "new-2021", False),       # no claims anywhere
+    ("attempt.yml", "verifier-1", "acme/encore-runner", "demo-2020", False),  # verification runs in the registry
+    ("attempt.yml", "reconcile", "acme/encore-runner", "demo-2020", False),
+])
+def test_a_run_from_encore_runner_continues_only_its_own_attempt_and_only_up_to_the_author(
+        tmp_path, registry, name, role, repo, paper, ok):
+    r = run_start(name, tmp_path, registry, ROLE=role, PAPER=paper, GITHUB_REPOSITORY=repo,
+                  REGISTRY="encorescience/encore-registry")
+    assert (r.returncode == 0) == ok, r.stdout + r.stderr
+    if ok:
+        base = (tmp_path / "out").read_text()
+        assert "base_sha=" in base
+
+
+def test_the_registrys_own_runs_start_as_before(tmp_path, registry):
+    # No registry named: the caller is the registry, and an attempt branch is continued whoever began it.
+    r = run_start("attempt.yml", tmp_path, registry, ROLE="verifier-1", REGISTRY="")
+    assert r.returncode == 0, r.stdout + r.stderr
+
+
+def test_a_run_from_encore_runner_refuses_a_registry_that_is_not_a_repository(tmp_path, registry):
+    r = run_start("attempt.yml", tmp_path, registry, ROLE="author", REGISTRY="x; rm -rf /")
+    assert r.returncode != 0 and "Not a repository" in r.stdout

@@ -1,61 +1,53 @@
-# Outside Runs
+# Runs from encore-runner
 
-An organization other than CatalystNeuro can run Encore's attempts itself, with its own Anthropic API key, its own compute and its own copy of the papers, and send the results to the registry, [encorescience/encore-registry](https://github.com/encorescience/encore-registry). Its attempts then sit in the same registry as CatalystNeuro's, on the same pages of [encorescience.org](https://encorescience.org), with the organization named as the one that ran them. CatalystNeuro's verifiers check each one after it arrives, as they check any attempt, and until they do the site shows it as not yet verified.
+The runs that begin an attempt, the reader's claims and the author's first run, can be made from [encorescience/encore-runner](https://github.com/encorescience/encore-runner) or from a fork of it. CatalystNeuro makes its own from encore-runner. Another organization forks it and runs Encore with its own Anthropic API key, its own compute and its own copy of the papers. Either way the results go to one place, the registry, [encorescience/encore-registry](https://github.com/encorescience/encore-registry), on the attempt's branch, and from there the attempt goes on as any other: the registry's verifiers check it, and a person merges it. On [encorescience.org](https://encorescience.org) the attempt names the organization that ran it.
 
-This page says how to set that up, how a submission goes, and what the registry checks before a person merges it.
+This page says how a run from encore-runner reaches the registry, what the registry checks before it takes one, and how an organization sets up its fork.
 
 ## How It Works
 
-The organization forks the registry on GitHub and runs the same workflows CatalystNeuro runs, in its fork. The fork is only a place to run and to send pull requests from: the records live in the central registry, and nothing the fork publishes or tracks (the site, the queue, the target lists) runs there, because those jobs check that they are in `encorescience/encore-registry`.
+encore-runner holds no protocol of its own. Its workflows call this repository's `papers.yml` and `attempt.yml` with the input `registry: encorescience/encore-registry`. In that mode a run reads the registry, starting from the attempt's branch there when there is one, and writes nothing to it. Its last job, `submit`, gathers what the run changed into one file, `submission.tar.gz` (`tools/submission.py`), and signs it with GitHub's artifact attestations. The signature names the workflow that made the file (this repository's `papers.yml` or `attempt.yml`, at the commit the caller named), the repository and run it was made in, and the file's digest. A workflow in encore-runner or a fork cannot sign as this repository's, so a submission whose signature checks was made by the protocol's own workflow and has not been changed since.
 
-A paper goes in two pull requests, because the protocol fixes a paper's claims before anyone tests them on the data (the checkpoint in `docs/pipeline.md`):
+The registry takes a submission with its intake workflow, given the run's address. The intake checks the signature, checks that the submission changes only what its role may change, and checks that the run started from the attempt branch's current commit. It then commits the submission to the attempt's branch, `attempt/<paper>`, and names the repository and run in the commit (`Encore-Source`, `Encore-Run`). The next run starts from that commit.
 
-1. **The claims.** The reader writes the paper's claims file and a second reader checks it (`papers.yml`, roles `claims` and `claims-check`). The organization sends the claims file and those two runs' transcripts to the registry. A person at CatalystNeuro merges it, which puts the claims on main.
-2. **The attempt.** The organization updates its fork from the registry's main, runs the author on those claims (`attempt.yml`, role `author`), and sends the attempt: its record, its entry, the author's questions and its transcripts.
+A paper's attempt begins with three runs, each taken by the intake before the next starts:
 
-A paper whose claims are already on the registry's main skips the first step: the author starts from those claims, as CatalystNeuro's own repeat attempts do. A paper the registry does not list yet (in `papers/keys.yaml` and `papers/datasets/`) has to be added by CatalystNeuro first; ask for it with `encore request` or an issue on the registry.
+1. **claims**: the reader writes the paper's claims file (`papers.yml`).
+2. **claims-check**: a second reader checks it, until its last check says the file is ready.
+3. **author**: the author's first run on those claims (`attempt.yml`).
 
-The verification rounds, the author's revisions after them, the reconcile run and the recorder all run in the registry, on CatalystNeuro's accounts, after the attempt is merged. An outside pull request does not include them.
+Each run starts from the commit the intake made for the one before, and the intake refuses a run that started anywhere else. The author's run is therefore signed as having started from the checked claims, which is the protocol's checkpoint (`docs/pipeline.md`): the claims are fixed before anyone tests them on the data. A paper whose claims are already on the registry's main can start with the author.
 
-## Setting Up a Fork
+After the author's run, the registry takes over. The verification rounds, the author's revisions after them, the reconcile run and the recorder run in the registry on the same branch, on CatalystNeuro's accounts, as for any attempt. The site shows the attempt as not yet verified until they agree with it.
 
-Fork `encorescience/encore-registry` into the organization's GitHub account and enable Actions on the fork. GitHub disables scheduled workflows on a fork, which is what you want: the only workflows the fork needs are the ones you start by hand.
+## What the Intake Checks
 
-The fork needs one secret and one environment:
+The intake (`tools/intake.py` in the registry) never runs anything from a submission; it reads the files and checks them:
 
-- A repository secret `ANTHROPIC_API_KEY`, the organization's own key. Runs are billed to it. The workflows use the key when the fork has no `CLAUDE_CODE_OAUTH_TOKEN`, which an outside fork does not.
-- An environment named `papers`, with a secret `PAPERS_DEPLOY_KEY`: the private half of a read-only deploy key on the organization's own paper store. The runs read the papers in that environment and never commit them.
+- The signature is GitHub's, for this repository's `papers.yml` or `attempt.yml`, made in the run the intake was given and in that run's repository.
+- The submission names the registry and the run it came from, and its files are one paper's: its claims file, attempt records, entry, questions and transcripts. It removes nothing but transcripts, which a new attempt moves aside.
+- A claims or claims-check run changes only the claims file, the questions file and the reader's transcripts. An author run leaves the claims file as it was, adds one new attempt record and changes no earlier one, and brings no verification rounds or later runs. Its record names who is accountable for it and the run it was made in.
+- The run started from the attempt branch's current commit, or, for a new attempt, from a commit on main. A repository continues only an attempt its own runs began, so two organizations never write to the same attempt.
 
-And two repository variables:
+The registry's usual check (`check.yml`) runs on the attempt when it comes to be merged, as on any pull request.
 
-- `ENCORE_PAPERS_REPO`, the paper store, as `owner/name`. It is a private repository laid out as CatalystNeuro's is: one folder per dataset, named as the registry's `papers/datasets/` files name the dataset's folder, holding the paper's full text and PDF named by its DOI in lower case with `/` as `-` (for example `10.1016-j.neuron.2020.01.001.txt`), and optionally the dataset's own description as `<id>.data-description.txt`. Large files can be in Git LFS. Papers are copyrighted, which is why each organization keeps its own store.
-- `ENCORE_ACCOUNTABLE`, the name the attempt records as the one accountable for it (for example "Acme Lab, University of Somewhere"). Without it the record names the fork's owner. It cannot be CatalystNeuro.
-
-## Running a Paper
-
-With `P` as the paper's key in the registry (its claims file is `claims/P.yaml`):
-
-1. Run the claims: from the fork's Actions tab, the "Paper run" workflow with role `claims`, then with role `claims-check`, until the last check in `claims/P.yaml` says the file is ready. The runs commit to the branch `attempt/P` in the fork.
-2. Open a pull request from that branch to `encorescience/encore-registry` with only the claims file and the two runs' transcripts. Wait for it to be merged.
-3. Update the fork's main from the registry's ("Sync fork" on GitHub) and delete the fork's `attempt/P` branch, so that the author's run starts from the claims as merged.
-4. Run the author: the "Agent run" workflow with role `author`. It commits to `attempt/P` again.
-5. Open a pull request from `attempt/P` to the registry. The registry's check runs on it, and a person reviews and merges it.
-
-The author has to start after the claims are on the registry's main; the check compares the time the author's run started with the time main took the claims file, and refuses an attempt that started earlier.
-
-## What the Registry Checks
-
-The registry's workflow `outside.yml` runs `tools/outside_check.py` on every pull request from a fork. It runs the registry's own copy of the check against the pull request's files, which it reads as data and never runs, so that a pull request cannot change the check it is held to. It passes a pull request that is one of the two submissions above and nothing more:
-
-- Every file it changes belongs to one paper: `claims/P.yaml`, `attempts/P-NN.yaml`, `entries/P/`, `questions/P.yaml`, `questions/P/` and `transcripts/P/`. It removes nothing outside the transcripts.
-- A claims pull request brings the claims file and the reader's transcripts, for a paper whose claims main does not have yet, and the file's last check says it is ready.
-- An attempt pull request leaves the claims file as main has it, adds exactly one new attempt record and changes no earlier one, and includes no verification rounds, revisions, reconcile run or recorder, in the record or as transcripts.
-- The attempt's record names who is accountable, and not CatalystNeuro, and its `provenance.runner.url` is a run of the attempt workflow in the fork the pull request comes from, which started after main took the claims.
-
-Both kinds also have to meet the protocol's schemas, and the registry's usual check (`check.yml`) runs on them as on any pull request: the entry's metadata and conventions, and its notebooks executed from a clean environment.
-
-The check establishes where an attempt was run and that it was run from fixed claims. It cannot establish that the transcripts are a faithful record of the run, any more than a record from CatalystNeuro's own runner could be checked that way from the outside. That is what happens after the merge: the registry executes the entry's notebooks again from a clean environment, and CatalystNeuro's verifiers check the analysis and each outcome against the paper and the claims file. Only their agreement moves the attempt out of "not yet verified".
+The signature establishes which workflow made a submission, where, and from which commit. It cannot establish that the transcripts are a faithful record of the run, any more than a record from CatalystNeuro's own runs could be checked that way from the outside. That is what the verification rounds are for: the registry executes the entry's notebooks again from a clean environment, and its verifiers check the analysis and each outcome against the paper and the claims file.
 
 ## Who Can Do What
 
-The organization's runs and its API key stay in its own account; CatalystNeuro never holds its key. The organization cannot write to the registry: its records arrive by pull request, and a person at CatalystNeuro merges them. CatalystNeuro's runs after the merge use CatalystNeuro's accounts and paper store.
+Submissions from encore-runner itself go on the attempt's branch as soon as they pass. Submissions from a fork pass the same checks and then wait until a person at CatalystNeuro approves them, so that the registry's verifiers spend nothing on a run nobody has looked at. The registry's variable `ENCORE_INTAKE_AUTO` lists the repositories whose submissions go straight on; adding a fork to it, or setting it to `*`, lets that fork's runs, or every fork's, go straight on too.
+
+An organization's runs and its API key stay in its own account; CatalystNeuro never holds its key. The organization cannot write to the registry: its runs read it, and the intake writes what they made. CatalystNeuro's runs after the author use CatalystNeuro's accounts and paper store.
+
+## Setting Up a Fork
+
+Fork encorescience/encore-runner into the organization's GitHub account and enable Actions on the fork. The fork is public, as a fork of a public repository is, which GitHub's signatures need on its Free and Team plans; it holds no papers and no keys.
+
+The fork needs one secret, one environment and two variables:
+
+- A repository secret `ANTHROPIC_API_KEY`, the organization's own key. Runs are billed to it.
+- An environment named `papers`, with a secret `PAPERS_DEPLOY_KEY`: the private half of a read-only deploy key on the organization's own paper store. The runs read the papers in that environment and never commit them.
+- A variable `ENCORE_PAPERS_REPO`, the paper store, as `owner/name`. It is a private repository laid out as CatalystNeuro's is: one folder per dataset, named as the registry's `papers/datasets/` files name the dataset's folder, holding the paper's full text and PDF named by its DOI in lower case with `/` as `-` (for example `10.1016-j.neuron.2020.01.001.txt`), and optionally the dataset's own description as `<id>.data-description.txt`. Large files can be in Git LFS. Papers are copyrighted, which is why each organization keeps its own store.
+- A variable `ENCORE_ACCOUNTABLE`, the name the attempt records as accountable for it (for example "Acme Lab, University of Somewhere"). Without it the record names the fork's owner.
+
+encore-runner's README says how to run a paper and send each run to the registry. A paper the registry does not list yet (in `papers/keys.yaml` and `papers/datasets/`) has to be added there first; ask for it with `encore request` or an issue on the registry.

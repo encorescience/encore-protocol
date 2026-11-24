@@ -8,7 +8,7 @@ This repository holds the protocol that Encore runs to test a paper's claims aga
 | --- | --- |
 | `docs/protocol.md` | The protocol: the roles, their order and the criteria each one applies. |
 | `docs/agents/` | The prompt each agent role is given. |
-| `docs/outside-runs.md` | How another organization runs attempts with its own API key and sends them to the registry. |
+| `docs/outside-runs.md` | How the runs that begin an attempt are made from encore-runner, or another organization's fork of it with its own API key, and taken into the registry. |
 | `schemas/` | The schemas of the claims, attempts and entries the protocol writes. |
 | `tools/` | The code a run uses: prompt assembly, entry execution, the claims check, transcript cleaning and the archive adapters. |
 | `encore_science/` | The `encore` command-line tool, published on PyPI as `encore-science`. |
