@@ -105,6 +105,27 @@ def test_osf_targets_pin_each_file_by_its_version_and_hashes():
         assert f'https://api.osf.io/v2/{t["api_type"]}/{t["id"]}/files/' in datasets.access(t["key"])
 
 
+def test_a_zenodo_record_is_named_and_pinned_by_its_record_id_and_read_directly():
+    from archives import ALL
+    key = datasets.parse("ZENODO:3924718")
+    assert key == "zenodo:3924718" and datasets.folder(key) == "zenodo-3924718" and datasets.parse("zenodo-3924718") == key
+    assert datasets.label(key) == "ZENODO:3924718" and datasets.archive_name(key) == "Zenodo"
+    zenodo = ALL["zenodo"]
+    assert zenodo.stage is None and not zenodo.secrets and zenodo.builder == "tools/build_zenodo_targets.py"
+    assert zenodo.url.format(id="3924718") == "https://zenodo.org/records/3924718"
+    access = zenodo.access.format(id="3924718")
+    assert "https://zenodo.org/api/records/3924718/files/<key>/content" in access and "10.5281/zenodo.3924718" in access
+
+
+def test_zenodo_targets_are_open_datasets_pinned_by_record_with_md5s():
+    # targets/zenodo.json, when the registry has one (tools/build_zenodo_targets.py writes it).
+    found = [t for t in datasets.targets() if t["archive"] == "zenodo"]
+    for t in found:
+        assert t["id"].isdigit() and t["published_version"] == t["id"] and t["papers"], t["id"]
+        assert t["doi"] == f'10.5281/zenodo.{t["id"]}' and t["concept_id"], t["id"]
+        assert all(len(f["md5"] or "") == 32 for f in t["files"]), t["id"]
+
+
 def test_staging_skips_archives_agents_read_directly_and_needs_its_secrets(monkeypatch, capsys):
     import stage_files
     monkeypatch.delenv("DRYAD_CLIENT_ID", raising=False)

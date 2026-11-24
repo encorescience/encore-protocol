@@ -378,6 +378,47 @@ The workflows take a dataset in any of these forms.
   `osf:<GUID>/<published_version>` under `related`, and gives in the notebook
   header the version and SHA-256 of each file read.
 
+## Zenodo
+
+- **Datasets.** A record on Zenodo (`zenodo.org`), CERN's general-purpose
+  repository, named by its record id: `https://zenodo.org/records/3924718`,
+  DOI `10.5281/zenodo.3924718`, is `ZENODO:3924718`, in folders
+  `zenodo-3924718`. Zenodo holds every GitHub release archived through its
+  integration, posters and slides as well as data, so the registry's list,
+  `targets/zenodo.json`, is built from chosen record ids by
+  `tools/build_zenodo_targets.py`, which reads each record's metadata, files
+  and versions from Zenodo's public REST API and keeps records whose
+  `resource_type` is a dataset. The papers are the record's related
+  identifiers marked `isSupplementTo`, `isDescribedBy` or `isCitedBy` that
+  are journal articles or preprints; otherwise give the paper's DOI to the
+  builder (`<record id>=<paper DOI>`), from the paper's data statement.
+  Related identifiers marked `isSupplementTo` a GitHub repository are listed
+  under `code`.
+- **Versions.** Each version of a deposit is a record of its own, with its
+  own id and DOI, and a deposit's concept record (`conceptrecid`, with its
+  concept DOI) resolves to the latest version. A record id therefore pins a
+  version, and `published_version` is the record id. The target list also
+  gives the deposit's `concept_id` and the ids of its other versions
+  (`version_ids`), because a paper may cite the concept DOI or a version other
+  than the one pinned; pin the record the paper cites, or the latest when it
+  cites the concept DOI. A record's files cannot change once it is published:
+  a change to the files is a new version. Record the record id under
+  `dataset: version` and its DOI under `dataset: doi`, and give in the
+  notebook header the MD5 of each file read, which the record gives
+  (`checksum: md5:<hex>`).
+- **Reading.** An open record needs no account. Its metadata, versions and
+  files are at `https://zenodo.org/api/records/<id>` (under `files`, each with
+  `key`, `size` and `checksum`), and each file at
+  `https://zenodo.org/api/records/<id>/files/<key>/content`. Open it with
+  `fsspec.open(url, block_size=2**20)`, opening a zip in place with
+  `zipfile`, or with `pandas`, and read it into memory; do not download whole
+  files to disk. A record whose files are restricted or embargoed
+  (`access_right` other than `open`) is not a target. The record's
+  description, in the target list, and a README among its files, when there
+  is one, describe the data.
+- **In an entry.** The entry names the dataset as `zenodo:<id>/<id>` under
+  `related`, and gives in the notebook header the MD5 of each file read.
+
 ## Local and remote (`encore check`)
 
 Two kinds of dataset exist only inside a run of `encore check`

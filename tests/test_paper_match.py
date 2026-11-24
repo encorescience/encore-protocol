@@ -89,6 +89,19 @@ def test_an_osf_project_is_named_by_its_page_or_doi_and_not_by_a_word_that_spell
     assert not by_chance["checks"]["names_this"] and "verdict" not in by_chance
 
 
+def test_a_zenodo_record_is_named_by_its_page_or_doi_or_another_version_of_its_deposit():
+    # tools/paper_match.py: a paper may cite the concept DOI, or a version other than the one pinned.
+    assert pm.archives_named("Data: https://zenodo.org/records/3924718 and doi:10.5281/zenodo.17624449; "
+                             "code at https://zenodo.org/record/555.") == ["Zenodo:3924718", "Zenodo:17624449",
+                                                                           "Zenodo:555"]
+    zenodo = {"archive": "zenodo", "id": "3924718", "key": "zenodo:3924718", "folder": "zenodo-3924718",
+              "name": "A deposit", "papers": [], "concept_id": "3924717", "version_ids": ["3924718", "4000001"]}
+    by_concept = pm.check(zenodo, paper("10.1/a", relation="Describes"), text("Data: 10.5281/zenodo.3924717."))
+    assert by_concept["checks"]["names_this"] and by_concept["checks"]["names_others"] == []
+    other = pm.check(zenodo, paper("10.1/a", relation="Describes"), text("Data: 10.5281/zenodo.123456."))
+    assert not other["checks"]["names_this"] and other["checks"]["names_others"] == ["Zenodo:123456"]
+
+
 def test_a_paper_whose_text_does_not_carry_its_title_is_left_for_the_agent():
     # A mistyped DOI: the text is another paper.
     row = pm.check(target([]), paper("10.1/a"), "Energy complexity of convolutional neural networks\n\nNo data.")
