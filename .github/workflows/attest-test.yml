@@ -1,0 +1,28 @@
+name: Attestation test (temporary)
+
+# A test, to be deleted: does an attestation made inside this reusable workflow name this workflow as its signer,
+# when another repository calls it?
+
+on:
+  workflow_call:
+
+jobs:
+  sign:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - name: Write a result
+        run: mkdir out && echo "encore attestation test, run $GITHUB_RUN_ID of $GITHUB_REPOSITORY" > out/result.txt
+      - uses: actions/attest-build-provenance@v2
+        id: att
+        with:
+          subject-path: out/result.txt
+      - name: Keep the bundle with the result
+        run: cp "${{ steps.att.outputs.bundle-path }}" out/result.sigstore.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: result
+          path: out/
