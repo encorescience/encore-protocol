@@ -95,6 +95,18 @@ def test_an_osf_project_is_named_by_its_guid_in_lower_case_and_read_directly():
     assert "https://api.osf.io/v2/registrations/qpc2d/files/" in access and "?version=<version>" in access
 
 
+def test_osf_downloads_reach_its_object_storage_and_are_read_at_a_given_size():
+    # https://osf.io/download/<id>/ redirects through files.osf.io to Oracle Cloud object storage
+    # (idvyorynw6xy.compat.objectstorage.us-ashburn-1.oraclecloud.com and the like), so the sandbox must allow it.
+    # WaterButler answers HEAD with the size of a file's first version, so fsspec must be given the size, or it
+    # stops reading a later, larger version at the first version's size.
+    from archives import ALL
+    osf = ALL["osf"]
+    assert "*.oraclecloud.com" in osf.hosts and "storage.googleapis.com" not in osf.hosts
+    access = osf.access.format(id="qpc2d", api_type="nodes", published_version="2024-10-30T12:29:01")
+    assert "size=<size>" in access and "sha256" in access and "has no version" in access
+
+
 def test_osf_targets_pin_each_file_by_its_version_and_hashes():
     # targets/osf.json, when the registry has one (tools/build_osf_targets.py writes it).
     found = [t for t in datasets.targets() if t["archive"] == "osf"]
