@@ -43,9 +43,19 @@ FULL = QUICK + ("answer", "author-answers", "verifier-1", "author-revise-1", "ve
 NETWORK = ["pypi.org", "files.pythonhosted.org", "github.com", "*.githubusercontent.com", "doi.org", "*.doi.org"]
 ARCHIVE_HOSTS = ["dandiarchive.org", "*.dandiarchive.org", "*.amazonaws.com", "crcns.org", "*.ebrains.eu"]
 DOI = re.compile(r"\b(10\.[0-9]{4,9}/[^\s\"<>]+)")
-# The one finished attempt the prompts point to for file formats. Every other dataset's work is taken out of a
-# run's copy of the registry, so that no agent can read another attempt on the same paper or data.
-EXAMPLE = {"claims": "001453", "entries": "001453-fouke-2025", "attempts": "001453-fouke-2025-01.yaml"}
+# The one finished attempt the prompts point to for file formats (docs/agents/author.md). Every other dataset's work
+# is taken out of a run's copy of the registry, so that no agent can read another attempt on the same paper or data.
+EXAMPLE = {"claims": "fouke-2025.yaml", "entries": "fouke-2025", "attempts": "fouke-2025-01.yaml"}
+PRUNED = ("claims", "entries", "attempts", "questions", "transcripts")
+
+
+def sparse_patterns() -> str:
+    """What a run fetches of the registry, as patterns for git's sparse checkout: everything but the work that
+    prune() takes out, which is most of the registry's size and grows with every attempt."""
+    lines = ["/*"]
+    for kind in PRUNED:
+        lines += [f"!/{kind}/*", f"/{kind}/.gitkeep"] + ([f"/{kind}/{EXAMPLE[kind]}"] if kind in EXAMPLE else [])
+    return "\n".join(lines + ["!/docs/pilot-notes/"]) + "\n"
 
 
 class Stop(Exception):
@@ -108,21 +118,39 @@ def dataset_of(spec: str, version: str = "") -> Dataset:
     return Dataset(archive, id_, f"{archive}:{id_}", "", version)
 
 
-def cached_clone(url: str, name: str, ref: str) -> Path:
-    """A cached shallow clone of URL at REF (a branch, a tag or a commit), brought up to date."""
+def cached_clone(url: str, name: str, ref: str, sparse: str | None = None) -> Path:
+    """A cached shallow clone of URL at REF (a branch, a tag or a commit), brought up to date. With SPARSE (patterns
+    for git's sparse checkout), only the files they match are checked out, and only those files are downloaded."""
     cache = Path(os.environ.get("ENCORE_CACHE") or Path.home() / ".cache" / "encore") / name
+    sparse_before = subprocess.run(["git", "config", "--get", "core.sparseCheckout"], cwd=cache,
+                                   capture_output=True, text=True).stdout.strip() if (cache / ".git").exists() else ""
+    if sparse and (cache / ".git").exists() and sparse_before != "true":
+        shutil.rmtree(cache)   # a full clone, from before runs fetched only what they keep
     if not (cache / ".git").exists():
         cache.mkdir(parents=True, exist_ok=True)
         git("init", "-q", cwd=cache)
         git("remote", "add", "origin", url, cwd=cache)
-    git("fetch", "-q", "--depth", "1", "origin", ref, cwd=cache)
+        if sparse:
+            git("config", "core.sparseCheckout", "true", cwd=cache)
+    if sparse:
+        (cache / ".git" / "info").mkdir(exist_ok=True)
+        (cache / ".git" / "info" / "sparse-checkout").write_text(sparse)
+        try:   # leave out the files' contents, then fetch only those the checkout needs
+            git("fetch", "-q", "--depth", "1", "--filter=blob:none", "origin", ref, cwd=cache)
+        except subprocess.CalledProcessError:   # a git from before partial clones (2.19): everything, as before
+            git("fetch", "-q", "--depth", "1", "origin", ref, cwd=cache)
+    else:
+        git("fetch", "-q", "--depth", "1", "origin", ref, cwd=cache)
     git("checkout", "-q", "-f", "FETCH_HEAD", cwd=cache)
+    if sparse:   # patterns that changed since the last checkout
+        git("read-tree", "-mu", "HEAD", cwd=cache)
     return cache
 
 
 def registry_source(ref: str) -> Path:
-    """The registry to copy for a run: a cached clone of the public repository at REF."""
-    return cached_clone(REPO_URL, "registry", ref)
+    """The registry to copy for a run: a cached clone of the public repository at REF, without the work that a
+    run's copy leaves out (sparse_patterns)."""
+    return cached_clone(REPO_URL, "registry", ref, sparse_patterns())
 
 
 def protocol_source(ref: str) -> Path:
@@ -191,10 +219,18 @@ class Run:
         shutil.rmtree(self.registry, ignore_errors=True)   # a setup that stopped part-way
         source = registry_source(self.ref)
         say(f"Copying the registry from {source}")
-        git("clone", "-q", str(source), str(self.registry))
-        git("checkout", "-q", "-b", f"encore/{self.dataset.folder}", cwd=self.registry)
+        # The files the cache checked out, in a repository of their own: a clone of the cache would need the
+        # contents of every file it left out.
+        shutil.copytree(source, self.registry, ignore=lambda d, names: [".git"] if Path(d) == source else [])
+        for kind in PRUNED:
+            (self.registry / kind).mkdir(exist_ok=True)
+        git("init", "-q", cwd=self.registry)
+        git("symbolic-ref", "HEAD", f"refs/heads/encore/{self.dataset.folder}", cwd=self.registry)
         git("config", "user.name", "encore", cwd=self.registry)
         git("config", "user.email", "encore@localhost", cwd=self.registry)
+        git("add", "-A", "-f", cwd=self.registry)   # -f: the cache holds only the registry's own files
+        git("commit", "-q", "-m", f"encore-registry at {git('rev-parse', 'HEAD', cwd=source).strip()}",
+            cwd=self.registry)
         # A registry from before the protocol had a repository of its own (2026-11-23) has no protocol.lock and
         # holds the protocol itself.
         lock = self.registry / "protocol.lock"
@@ -228,7 +264,7 @@ class Run:
 
     def prune(self) -> None:
         """Take every other dataset's claims, entries, attempts, questions and transcripts out of the copy."""
-        for kind in ("claims", "entries", "attempts", "questions", "transcripts"):
+        for kind in PRUNED:
             for path in (self.registry / kind).glob("*"):
                 if path.name != EXAMPLE.get(kind) and path.name != ".gitkeep":
                     shutil.rmtree(path) if path.is_dir() else path.unlink()
@@ -242,9 +278,10 @@ class Run:
         if readme.is_file():
             readme.write_text("".join(line for line in readme.read_text().splitlines(keepends=True)
                                       if not re.match(r"^\| \[", line)))
-        git("add", "-A", "--", *[p for p in ("claims", "entries", "attempts", "questions", "transcripts", "docs",
-                                              "README.md") if (self.registry / p).exists()], cwd=self.registry)
-        git("commit", "-q", "-m", "encore check: only the example attempt", cwd=self.registry)
+        git("add", "-A", "--", *[p for p in (*PRUNED, "docs", "README.md") if (self.registry / p).exists()],
+            cwd=self.registry)
+        if subprocess.run(["git", "diff", "--cached", "--quiet"], cwd=self.registry).returncode:
+            git("commit", "-q", "-m", "encore check: only the example attempt", cwd=self.registry)
 
     def save(self) -> None:
         self.state_path.write_text(json.dumps(self.state, indent=1))
