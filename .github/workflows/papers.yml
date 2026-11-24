@@ -74,6 +74,12 @@ on:
       # The API key under its usual name, for a caller outside CatalystNeuro (docs/outside-runs.md).
       ANTHROPIC_API_KEY:
         required: false
+      # The paper store's deploy key, for a caller in another organization (docs/outside-runs.md). GitHub's
+      # `secrets: inherit` and a caller's environment secrets reach a reusable workflow only within one
+      # organization, so a fork outside encorescience passes the key by name. The registry's own runs read it
+      # from their `papers` environment, as before.
+      PAPERS_DEPLOY_KEY:
+        required: false
 
 permissions:
   contents: read

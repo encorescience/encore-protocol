@@ -43,10 +43,11 @@ An organization's runs and its API key stay in its own account; CatalystNeuro ne
 
 Fork encorescience/encore-runner into the organization's GitHub account and enable Actions on the fork. The fork is public, as a fork of a public repository is, which GitHub's signatures need on its Free and Team plans; it holds no papers and no keys.
 
-The fork needs one secret, one environment and two variables:
+The fork needs two secrets, one environment and two variables:
 
-- A repository secret `ANTHROPIC_API_KEY`, the organization's own key. Runs are billed to it.
-- An environment named `papers`, with a secret `PAPERS_DEPLOY_KEY`: the private half of a read-only deploy key on the organization's own paper store. The runs read the papers in that environment and never commit them.
+- A repository secret with the organization's own account for Claude: either `ANTHROPIC_API_KEY`, an API key, whose runs are billed to it, or `CLAUDE_CODE_OAUTH_TOKEN`, a token for a Claude subscription made with `claude setup-token`, whose runs count against that subscription's limits. With both, the runs use the token.
+- A repository secret `PAPERS_DEPLOY_KEY`: the private half of a read-only deploy key on the organization's own paper store. It has to be a repository secret, not an environment's: the protocol's workflows are in another organization, and GitHub passes neither `secrets: inherit` nor a caller's environment secrets to a reusable workflow outside the caller's own organization, so encore-runner passes each secret by name.
+- An environment named `papers`, which the runs that read the papers run in. They never commit the papers.
 - A variable `ENCORE_PAPERS_REPO`, the paper store, as `owner/name`. It is a private repository laid out as CatalystNeuro's is: one folder per dataset, named as the registry's `papers/datasets/` files name the dataset's folder, holding the paper's full text and PDF named by its DOI in lower case with `/` as `-` (for example `10.1016-j.neuron.2020.01.001.txt`), and optionally the dataset's own description as `<id>.data-description.txt`. Large files can be in Git LFS. Papers are copyrighted, which is why each organization keeps its own store.
 - A variable `ENCORE_ACCOUNTABLE`, the name the attempt records as accountable for it (for example "Acme Lab, University of Somewhere"). Without it the record names the fork's owner.
 
