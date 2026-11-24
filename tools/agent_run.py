@@ -128,6 +128,26 @@ def runner() -> dict:
     return {"runner": "local", "runner_url": ""}
 
 
+# The organizations whose copies of the registry are CatalystNeuro's own: encorescience, and catalystneuro, where the
+# registry began. A run anywhere else is an outside run (docs/outside-runs.md).
+CENTRAL_OWNERS = ("encorescience", "catalystneuro")
+
+
+def accountable() -> str:
+    """Who answers for this run, for the record's provenance: ENCORE_ACCOUNTABLE when the caller sets it, else the
+    organization that runs it when that is not CatalystNeuro's, else CatalystNeuro."""
+    env = os.environ
+    named = " ".join((env.get("ENCORE_ACCOUNTABLE") or "").split())
+    if named:
+        if any(c in named for c in '"{}\\'):
+            raise SystemExit(f"ENCORE_ACCOUNTABLE may not hold quotes, braces or backslashes: {named!r}")
+        return named
+    owner = (env.get("GITHUB_REPOSITORY") or "").split("/", 1)[0]
+    if env.get("GITHUB_ACTIONS") == "true" and owner and owner.lower() not in CENTRAL_OWNERS:
+        return owner
+    return "CatalystNeuro"
+
+
 def protocol_version() -> str:
     """The protocol version stated at the top of docs/protocol.md."""
     text = (ROOT / "docs" / "protocol.md").read_text()
@@ -182,7 +202,7 @@ def _fill(role: str, target_name: str, model: str, version: str | None = None, r
     details = {"key": key, "folder": key, "claims": paper_records.claims_file(key).relative_to(ROOT).as_posix(),
                "questions": paper_records.questions_file(key).relative_to(ROOT).as_posix(),
                "model": model, "date": datetime.date.today().isoformat(),
-               **data_details(key), **target(key), **runner()}
+               **data_details(key), **target(key), **runner(), "accountable": accountable()}
     first = paper_records.datasets_of(key, available_only=True)[0]
     if version:
         details["version_rule"] = (f"Use version {version} of {datasets.label(first['key'])}"

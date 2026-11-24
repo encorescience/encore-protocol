@@ -4,7 +4,7 @@ Target: paper doi:{paper}, "{title}", on {dataset}.{several} A reader has writte
 
 Do steps 1 to 5 of the Author section of the protocol, then run `python tools/entry.py handover entries/<name>` (step 6). Do not verify your own work. Lock, check and run the entry with `python tools/entry.py lock|all entries/<name>`; `uv` is installed. Do not commit or push: the workflow commits your changes.
 
-Provenance: kind agent; accountable name "CatalystNeuro"; harness "Claude Code"; model "{model}"; protocol: the version stated in docs/protocol.md; runner: platform "{runner}"{runner_url}. Date {date}.
+Provenance: kind agent; accountable name "{accountable}"; harness "Claude Code"; model "{model}"; protocol: the version stated in docs/protocol.md; runner: platform "{runner}"{runner_url}. Date {date}.
 
 Write prose plainly: no em dashes, never the word "rather", no bold except the "**Result: ...**" openers the protocol requires. YAML plain scalars must not contain ": " (colon space). If something in the protocol is ambiguous or does not fit this dataset, make a reasonable choice and record it; but never choose a claim's method silently: when the claims file does not give it, take it from the paper and cite the passage; where the paper leaves it open, follow step 1.6 (run every reading, adopt the best-supported choice as a stated assumption or block the claim when no choice is defensible, and record the question for the paper's authors). Ask a reader only when you believe the claims file misreads the paper.
 

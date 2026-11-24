@@ -42,6 +42,22 @@ on:
       account:
         type: string
         default: verified
+      # Outside CatalystNeuro (docs/outside-runs.md): the caller passes its own repository variables here, since a
+      # called workflow cannot be relied on to read them. Empty: CatalystNeuro's paper store, and the accountable
+      # name agent_run.py works out from the repository.
+      papers_repo:
+        type: string
+        default: ""
+      accountable:
+        type: string
+        default: ""
+      # A run from encore-runner, or a fork of it (docs/outside-runs.md): the registry it reads, which it cannot
+      # write to. The run starts from the attempt's branch there, and its results are signed and uploaded as a
+      # submission (the `submit` job) for the registry's intake to take; nothing is pushed. Empty: the caller is the
+      # registry itself, and the run commits to the attempt's branch (the `commit` job).
+      registry:
+        type: string
+        default: ""
       replicate:
         type: string
         default: ""
@@ -50,10 +66,13 @@ on:
         default: false
     secrets:
       CLAUDE_CODE_OAUTH_TOKEN:
-        required: true
+        required: false
       CLAUDE_CODE_OAUTH_TOKEN_UNVERIFIED:
         required: false
       ANTHROPIC_API_KEY_CREDITS:
+        required: false
+      # The API key under its usual name, for a caller outside CatalystNeuro (docs/outside-runs.md).
+      ANTHROPIC_API_KEY:
         required: false
 
 permissions:
@@ -70,6 +89,7 @@ env:
   MODEL: ${{ inputs.model }}
   ACCOUNT: ${{ inputs.account || 'verified' }}
   REPLICATE: ${{ inputs.replicate }}
+  REGISTRY: ${{ inputs.registry }}
   CLAUDE_CODE_VERSION: 2.1.284
   # The tools the agent may use without asking. With CLAUDE_CODE_SUBPROCESS_ENV_SCRUB set, Claude
   # Code forces permission mode `default`, so this list and --permission-prompts none decide what
@@ -88,9 +108,13 @@ jobs:
       started: ${{ steps.agent.outputs.started || steps.checks.outputs.started }}
       folder: ${{ steps.start.outputs.folder }}
       flagged: ${{ steps.flag.outputs.flagged }}
+      account: ${{ steps.acct.outputs.account }}
+      base_sha: ${{ steps.start.outputs.base_sha }}
+      protocol_ref: ${{ steps.base.outputs.protocol_ref }}
     steps:
       - uses: actions/checkout@v4
         with:
+          repository: ${{ inputs.registry || github.repository }}
           persist-credentials: false
           fetch-depth: 1   # no step reads history, and all of it is ~930 MB (two jobs a run, eleven runs a chain)
 
@@ -105,9 +129,13 @@ jobs:
           persist-credentials: false
 
       - name: Lay the protocol over the registry, at main's version
+        id: base
         run: |
-          ref=$(git show "$GITHUB_SHA:protocol.lock" | tr -d '[:space:]')
-          echo "PROTOCOL_REF=$ref" >> "$GITHUB_ENV"
+          # Main's commit: the caller's own, or the registry's main for a run from encore-runner.
+          main=$(git rev-parse HEAD)
+          ref=$(git show "$main:protocol.lock" | tr -d '[:space:]')
+          { echo "PROTOCOL_REF=$ref"; echo "MAIN_SHA=$main"; } >> "$GITHUB_ENV"
+          echo "protocol_ref=$ref" >> "$GITHUB_OUTPUT"
           git -C .protocol archive "$ref" -- docs schemas tools | tar -x
           echo "Protocol $ref ($(git -C .protocol rev-parse --short "$ref^{commit}"))" >> "$GITHUB_STEP_SUMMARY"
 
@@ -132,14 +160,28 @@ jobs:
           fi
           { echo "FOLDER=$FOLDER"; echo "BRANCH=$BRANCH"; echo "TDIR=$TDIR"; } >> "$GITHUB_ENV"
           echo "folder=$FOLDER" >> "$GITHUB_OUTPUT"
+          if [ -n "$REGISTRY" ]; then
+            # From encore-runner, or a fork of it (docs/outside-runs.md): the reader's claims and their check.
+            [[ "$REGISTRY" =~ ^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$ ]] || { echo "::error::Not a repository: '$REGISTRY'"; exit 1; }
+            case "$ROLE" in claims|claims-check) ;; *) echo "::error::From encore-runner, papers.yml runs claims and claims-check only"; exit 1;; esac
+            [ -z "$REPLICATE" ] || { echo "::error::No replicates from encore-runner"; exit 1; }
+          fi
           if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null; then
             git fetch --depth 1 origin "$BRANCH" && git checkout -f -B "$BRANCH" FETCH_HEAD
             # The registry's tools as the workflow has them, not as the branch had them when its attempt began: a
             # branch made before a fix would otherwise run without it. Working files only, so they are never committed.
-            git restore --worktree --source "$GITHUB_SHA" -- tools   # the registry's own tools, as main has them
+            git restore --worktree --source "$MAIN_SHA" -- tools   # the registry's own tools, as main has them
           elif [ "$ROLE" != claims ] && [ "$ROLE" != paper-match ]; then
             echo "::error::No branch $BRANCH; run claims first"; exit 1
           fi
+          if [ -n "$REGISTRY" ] && [ "$(git branch --show-current)" = "$BRANCH" ]; then
+            # The registry's intake names, on each commit it makes to an attempt's branch, the repository whose run it
+            # took (Encore-Source). A run continues only an attempt that its own repository's runs began.
+            source=$(git log -1 --format='%(trailers:key=Encore-Source,valueonly)' | tr -d '[:space:]')
+            [ "$source" = "$GITHUB_REPOSITORY" ] || {
+              echo "::error::The attempt on $FOLDER under way in $REGISTRY is not this repository's (${source:-begun in the registry}); wait for it to finish"; exit 1; }
+          fi
+          echo "base_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           git log --oneline -1
 
       # On the attempt's branch: the protocol's text (docs/, schemas/) at the version the attempt began with, which
@@ -182,6 +224,8 @@ jobs:
           pip install --no-cache-dir uv pyyaml jsonschema nbformat
 
       - name: Write the prompt
+        env:
+          ENCORE_ACCOUNTABLE: ${{ inputs.accountable }}
         run: |
           python tools/agent_run.py prompt "$ROLE" "$FOLDER" --model "$MODEL" > "$RUNNER_TEMP/prompt.md"
           # The workflow's own tools, copied before the agent can change the checkout.
@@ -190,6 +234,7 @@ jobs:
       - name: Put the papers under paper/
         env:
           PAPERS_DEPLOY_KEY: ${{ secrets.PAPERS_DEPLOY_KEY }}
+          ENCORE_PAPERS_REPO: ${{ inputs.papers_repo }}
         run: |
           # The paper match reads the dataset's papers; the other roles, the paper's, from each of its datasets.
           if [ "$ROLE" = paper-match ]; then tools/get_papers.sh "$FOLDER" paper
@@ -206,8 +251,22 @@ jobs:
           echo "need=$need" >> "$GITHUB_OUTPUT"
           if [ "$need" = done ]; then echo "started=true" >> "$GITHUB_OUTPUT"; fi
 
+      - name: Choose the account
+        id: acct
+        env:
+          HAS_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN != '' }}
+          HAS_KEY: ${{ (secrets.ANTHROPIC_API_KEY_CREDITS || secrets.ANTHROPIC_API_KEY) != '' }}
+        run: |
+          # Outside CatalystNeuro there is usually one API key and no subscription token (docs/outside-runs.md): a
+          # run asked for on the verified account, the default, then runs on the key. CatalystNeuro's runs, which
+          # have the token, are unchanged.
+          account=$ACCOUNT
+          if [ "$account" = verified ] && [ "$HAS_TOKEN" != true ] && [ "$HAS_KEY" = true ]; then account=api; fi
+          echo "account=$account" >> "$GITHUB_OUTPUT"; echo "ACCOUNT=$account" >> "$GITHUB_ENV"
+          echo "Account: $account" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Check that the unverified account has a token
-        if: ${{ inputs.account == 'unverified' && steps.checks.outputs.need != 'done' }}
+        if: ${{ steps.acct.outputs.account == 'unverified' && steps.checks.outputs.need != 'done' }}
         env:
           HAS_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_UNVERIFIED != '' }}
         run: |
@@ -215,17 +274,17 @@ jobs:
           [ "$HAS_TOKEN" = true ] || { echo "::error::UNVERIFIED-UNAVAILABLE: no CLAUDE_CODE_OAUTH_TOKEN_UNVERIFIED secret"; exit 1; }
 
       - name: Check that the api account has its key
-        if: ${{ inputs.account == 'api' && steps.checks.outputs.need != 'done' }}
+        if: ${{ steps.acct.outputs.account == 'api' && steps.checks.outputs.need != 'done' }}
         env:
-          HAS_KEY: ${{ secrets.ANTHROPIC_API_KEY_CREDITS != '' }}
+          HAS_KEY: ${{ (secrets.ANTHROPIC_API_KEY_CREDITS || secrets.ANTHROPIC_API_KEY) != '' }}
         run: |
-          [ "$HAS_KEY" = true ] || { echo "::error::API-UNAVAILABLE: no ANTHROPIC_API_KEY_CREDITS secret"; exit 1; }
+          [ "$HAS_KEY" = true ] || { echo "::error::API-UNAVAILABLE: no ANTHROPIC_API_KEY_CREDITS or ANTHROPIC_API_KEY secret"; exit 1; }
 
       - name: Check the token, the permission mode and the agent's shell
         if: ${{ !inputs.papers_only && steps.checks.outputs.need != 'done' }}
         env:
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ inputs.account != 'api' && (inputs.account == 'unverified' && secrets.CLAUDE_CODE_OAUTH_TOKEN_UNVERIFIED || secrets.CLAUDE_CODE_OAUTH_TOKEN) || '' }}
-          ANTHROPIC_API_KEY: ${{ inputs.account == 'api' && secrets.ANTHROPIC_API_KEY_CREDITS || '' }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ steps.acct.outputs.account != 'api' && (steps.acct.outputs.account == 'unverified' && secrets.CLAUDE_CODE_OAUTH_TOKEN_UNVERIFIED || secrets.CLAUDE_CODE_OAUTH_TOKEN) || '' }}
+          ANTHROPIC_API_KEY: ${{ steps.acct.outputs.account == 'api' && (secrets.ANTHROPIC_API_KEY_CREDITS || secrets.ANTHROPIC_API_KEY) || '' }}
           CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: '1'
           DISABLE_AUTOUPDATER: '1'
           DISABLE_TELEMETRY: '1'
@@ -260,8 +319,8 @@ jobs:
         # Shorter than the job's limit, so that the transcript is still exported when it is reached.
         timeout-minutes: 300
         env:
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ inputs.account != 'api' && (inputs.account == 'unverified' && secrets.CLAUDE_CODE_OAUTH_TOKEN_UNVERIFIED || secrets.CLAUDE_CODE_OAUTH_TOKEN) || '' }}
-          ANTHROPIC_API_KEY: ${{ inputs.account == 'api' && secrets.ANTHROPIC_API_KEY_CREDITS || '' }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ steps.acct.outputs.account != 'api' && (steps.acct.outputs.account == 'unverified' && secrets.CLAUDE_CODE_OAUTH_TOKEN_UNVERIFIED || secrets.CLAUDE_CODE_OAUTH_TOKEN) || '' }}
+          ANTHROPIC_API_KEY: ${{ steps.acct.outputs.account == 'api' && (secrets.ANTHROPIC_API_KEY_CREDITS || secrets.ANTHROPIC_API_KEY) || '' }}
           CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: '1'
           CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1'
           DISABLE_AUTOUPDATER: '1'
@@ -337,12 +396,13 @@ jobs:
     needs: run
     # Whenever the agent was started, also when the run was cancelled or failed, so that its
     # transcript and partial work are kept; the commit message says how the run ended.
-    if: always() && needs.run.outputs.started == 'true' && needs.run.outputs.flagged != 'true'
+    if: always() && inputs.registry == '' && needs.run.outputs.started == 'true' && needs.run.outputs.flagged != 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
     env:
       FOLDER: ${{ needs.run.outputs.folder }}
+      ACCOUNT: ${{ needs.run.outputs.account || inputs.account || 'verified' }}
       BRANCH: ${{ inputs.replicate && format('replicate/{0}/{1}', needs.run.outputs.folder, inputs.replicate) || format('attempt/{0}', needs.run.outputs.folder) }}
     steps:
       - uses: actions/checkout@v4
@@ -403,3 +463,95 @@ jobs:
             -m "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}" \
             -m "Account: $ACCOUNT"
           git push origin "$BRANCH"
+
+  # A run from encore-runner, or a fork of it (docs/outside-runs.md), cannot write to the registry. Its results, as the
+  # commit job would have committed them, are gathered into one file (tools/submission.py), which GitHub signs as made
+  # by this workflow, in the caller's repository and run. The registry's intake checks that signature, so that what it
+  # takes was made by this workflow from the commit it names, and was not edited after.
+  submit:
+    needs: run
+    if: always() && inputs.registry != '' && needs.run.outputs.started == 'true' && needs.run.outputs.flagged != 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write       # to sign the submission
+      attestations: write   # to keep the signature with the caller's repository
+    env:
+      FOLDER: ${{ needs.run.outputs.folder }}
+      ACCOUNT: ${{ needs.run.outputs.account || inputs.account || 'verified' }}
+      BASE_SHA: ${{ needs.run.outputs.base_sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ inputs.registry }}
+          ref: ${{ needs.run.outputs.base_sha }}   # the registry's commit the run started from
+          persist-credentials: false
+          fetch-depth: 1
+
+      - uses: actions/checkout@v4
+        with:
+          repository: encorescience/encore-protocol
+          path: .protocol
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Lay the protocol's tools over the registry, and take submission.py from this workflow's own version
+        env:
+          WORKFLOW_SHA: ${{ job.workflow_sha }}
+        run: |
+          git -C .protocol archive "$(tr -d '[:space:]' < protocol.lock)" -- tools | tar -x
+          git -C .protocol show "$WORKFLOW_SHA:tools/submission.py" > "$RUNNER_TEMP/submission.py"
+          rm -rf .protocol
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: agent-run-${{ needs.run.outputs.folder }}-${{ inputs.role }}
+          path: out
+
+      - name: Gather the run's changes, as the commit job would commit them
+        run: |
+          set -euo pipefail
+          # Refuse anything that is not this paper's, as the commit job does.
+          others=$(ls out/transcripts | grep -vx "$FOLDER" || true)
+          [ -z "$others" ] || { echo "::error::Transcripts for other papers: $others"; exit 1; }
+          # As the commit job: the claims run starts an attempt, and moves an earlier attempt's transcripts aside.
+          if [ "$ROLE" = claims ]; then tools/archive_transcripts.sh "$FOLDER"; fi
+          if [ -s out/changes.patch ]; then
+            allowed="^(claims/$FOLDER\.yaml$|questions/$FOLDER\.yaml$)"
+            stray=$(git apply --numstat out/changes.patch | cut -f3 | grep -vE "$allowed" || true)
+            [ -z "$stray" ] || { echo "::error::Changes outside paper $FOLDER: $stray"; exit 1; }
+            git apply --index out/changes.patch
+          fi
+          # A transcript with nothing but its title means the agent never started; keep it out.
+          for f in out/transcripts/*/*.md; do [ -e "$f" ] || continue; [ "$(wc -l < "$f")" -gt 2 ] || rm "$f"; done
+          cp -r out/transcripts . && git add -A -- claims attempts entries questions transcripts
+          python "$RUNNER_TEMP/submission.py" pack --paper "$FOLDER" --out submission \
+            --meta role="$ROLE" --meta result="${{ needs.run.result }}" --meta account="$ACCOUNT" \
+            --meta registry="$REGISTRY" --meta base_sha="$BASE_SHA" \
+            --meta protocol_ref="${{ needs.run.outputs.protocol_ref }}" --meta repository="$GITHUB_REPOSITORY" \
+            --meta run_id="$GITHUB_RUN_ID" --meta run_attempt="$GITHUB_RUN_ATTEMPT" \
+            --meta run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          python "$RUNNER_TEMP/submission.py" show submission/submission.tar.gz
+
+      - name: Sign the submission
+        id: sign
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: submission/submission.tar.gz
+
+      - name: Keep the signature with the submission
+        run: |
+          cp "${{ steps.sign.outputs.bundle-path }}" submission/submission.sigstore.json
+          {
+            echo "### Submission: $FOLDER, $ROLE"
+            echo "Signed: ${{ steps.sign.outputs.attestation-url }}"
+            echo
+            echo "The registry takes it with its intake workflow, given this run's address:"
+            echo "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: submission
+          path: submission
+          retention-days: 30
