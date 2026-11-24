@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sys
 from pathlib import Path
 
@@ -208,3 +209,39 @@ def test_the_protocol_is_laid_over_a_copy_of_the_registry(tmp_path):
     assert all((registry / folder / "sub" / "file.txt").read_text() == f"protocol {folder}" for folder in LAID)
     assert (registry / "docs" / "queue.md").read_text() == "the registry's own"
     assert not (registry / "tools" / "__pycache__").exists() and not (registry / "README.md").exists()
+
+
+def test_a_run_reads_the_paper_first_layout(tmp_path):
+    reg = tmp_path / "out" / "registry"
+    (reg / "attempts").mkdir(parents=True)
+    (reg / "claims").mkdir()
+    (reg / "questions").mkdir()
+    (reg / "claims" / "local-x.yaml").write_text(
+        "checks:\n- ready: true\nclaims:\n- id: rate\n  statement: Rates rose.\n")
+    (reg / "questions" / "local-x.yaml").write_text("- question: Is rate per trial?\n")
+    (reg / "attempts" / "local-x-01.yaml").write_text(
+        "id: local-x-01\nentry: local-x\noutcomes:\n- claim: rate\n  outcome: reproduced\n")
+    r = run.Run(tmp_path / "out", run.Dataset("local", "x", "/d", "files-1"), None, None, None, False, "m", "main")
+    r.state = {"key": "local-x"}
+    assert r.claims_ready() and r.open_questions() == 1
+    state = {"folder": "local-x", "key": "local-x", "title": "Smith 2024", "doi": "10.1/x", "mode": "quick",
+             "model": "m", "protocol": "p", "finished": "2026-11-24T12:00", "dataset": {"location": "/d"},
+             "roles": {"author": {"status": "success"}}}
+    text = report.write_report(tmp_path, reg, state).read_text()
+    assert "## Claims: 1 reproduced" in text and "Rates rose." in text and "Open questions: 1" in text
+    assert "`registry/claims/local-x.yaml`" in text and "`registry/transcripts/local-x/`" in text
+
+
+def test_a_run_finds_its_paper_key_in_the_registry(tmp_path):
+    reg = tmp_path / "out" / "registry"
+    r = run.Run(tmp_path / "out", run.Dataset("local", "x", "/d", "files-1"), None, None, None, False, "m", "main")
+    reg.mkdir(parents=True)
+    assert r.paper_key() == "local-x"   # a registry from before papers had keys
+    shutil.copytree(REPO / "tools", reg / "tools")
+    (reg / "targets").mkdir()
+    (reg / "papers").mkdir()
+    (reg / "papers" / "triage.yaml").write_text("{}\n")
+    (reg / "targets" / "local.json").write_text(json.dumps({"targets": [
+        {"archive": "local", "id": "x", "name": "Smith 2024", "path": "/d", "fingerprint": "files-1",
+         "papers": [{"doi": "10.1/x", "title": "Smith 2024", "preprint": False}]}]}))
+    assert r.paper_key() == "local-x"   # a dataset no paper lists: its records go under its folder

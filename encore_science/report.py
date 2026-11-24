@@ -23,21 +23,28 @@ def files_in(directory: Path, pattern: str) -> list[Path]:
     return sorted(p for p in directory.glob(pattern) if not p.name.startswith("."))
 
 
-def latest_attempt(registry: Path, folder: str) -> dict | None:
-    found = files_in(registry / "attempts", f"{folder}-*.yaml")
+def latest_attempt(registry: Path, key: str) -> dict | None:
+    found = files_in(registry / "attempts", f"{key}-*.yaml")
     return yaml.safe_load(found[-1].read_text()) if found else None
 
 
-def claims_of(registry: Path, folder: str) -> dict[str, dict]:
+def claims_files(registry: Path, key: str) -> list[Path]:
+    """A paper's claims: claims/<key>.yaml (docs/paper-first.md), then any in claims/<key>/, where a paper tested
+    per dataset, or a registry from before papers had keys, keeps them."""
+    own = registry / "claims" / f"{key}.yaml"
+    return ([own] if own.is_file() else []) + files_in(registry / "claims" / key, "*.yaml")
+
+
+def claims_of(registry: Path, key: str) -> dict[str, dict]:
     out = {}
-    for path in files_in(registry / "claims" / folder, "*.yaml"):
+    for path in claims_files(registry, key):
         for c in (yaml.safe_load(path.read_text()) or {}).get("claims") or []:
             out[c["id"]] = c
     return out
 
 
-def open_questions(registry: Path, folder: str) -> list[dict]:
-    path = registry / "questions" / f"{folder}.yaml"
+def open_questions(registry: Path, key: str) -> list[dict]:
+    path = registry / "questions" / f"{key}.yaml"
     if not path.is_file():
         return []
     q = yaml.safe_load(path.read_text()) or []
@@ -58,9 +65,9 @@ def summary(record: dict | None) -> str:
 
 
 def write_report(out: Path, registry: Path, state: dict) -> Path:
-    folder = state["folder"]
-    record = latest_attempt(registry, folder)
-    claims = claims_of(registry, folder)
+    key = state.get("key") or state["folder"]
+    record = latest_attempt(registry, key)
+    claims = claims_of(registry, key)
     d = state["dataset"]
     lines = [f"# Encore report: {state['title']}", "",
              f"- **Dataset:** `{d['location']}`" + (f" (fingerprint `{d['fingerprint']}`)" if d.get("fingerprint") else ""),
@@ -74,7 +81,7 @@ def write_report(out: Path, registry: Path, state: dict) -> Path:
                 "independent agent has not checked the author's work. Run with --full for that."), ""]
     if record is None:
         lines += ["**The author wrote no attempt record**, so there are no outcomes to report. Its report is in "
-                  f"`registry/transcripts/{folder}/author-report.md`.", ""]
+                  f"`registry/transcripts/{key}/author-report.md`.", ""]
     else:
         lines += [f"## Claims: {summary(record)}", "", "| Claim | Outcome | Notes |", "|---|---|---|"]
         for o in sorted(record.get("outcomes", []), key=lambda o: ORDER.index(o["outcome"])):
@@ -89,7 +96,7 @@ def write_report(out: Path, registry: Path, state: dict) -> Path:
         else:
             lines.append("None.")
         lines.append("")
-    questions = open_questions(registry, folder)
+    questions = open_questions(registry, key)
     if questions:
         lines += [f"## Open questions: {len(questions)}", "",
                   "The author or a verifier believes the claims file misreads the paper on these claims, and "
@@ -99,11 +106,12 @@ def write_report(out: Path, registry: Path, state: dict) -> Path:
         lines.append("")
     entry = record.get("entry") if record else None
     lines += ["## Where everything is", "",
-              f"- The claims and how each was tested: `registry/claims/{folder}/`"]
+              f"- The claims and how each was tested: `registry/{files[0].relative_to(registry).as_posix()}`"
+              if (files := claims_files(registry, key)) else "- No claims file was written"]
     if entry:
         lines.append(f"- The notebooks: `registry/entries/{entry}/`")
         lines.append(f"- The attempt record: `registry/attempts/{record['id']}.yaml`")
-    lines += [f"- What each agent did: `registry/transcripts/{folder}/`", ""]
+    lines += [f"- What each agent did: `registry/transcripts/{key}/`", ""]
     path = out / "report.md"
     path.write_text("\n".join(lines))
     return path

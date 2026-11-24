@@ -258,6 +258,7 @@ class Run:
             target["path" if d.archive == "local" else "url"] = d.location
             (self.registry / "targets" / "local.json").write_text(json.dumps({"targets": [target]}, indent=1))
         self.state = {"prepared": True, "dataset": d.__dict__, "folder": d.folder, "doi": doi, "title": title,
+                      "key": self.paper_key(),
                       "mode": "full" if self.full else "quick", "model": self.model, "protocol": protocol, "protocol_ref": protocol_ref,
                       "source": str(source), "started": now(), "roles": {}}
         self.save()
@@ -285,6 +286,25 @@ class Run:
 
     def save(self) -> None:
         self.state_path.write_text(json.dumps(self.state, indent=1))
+
+    def paper_key(self) -> str:
+        """The name the registry keeps this run's records under (claims/<key>.yaml, transcripts/<key>/, ...): the
+        paper's key, which for a dataset no paper lists yet is the dataset's folder (tools/paper_records.py). A
+        registry from before papers had keys keeps them under the dataset's folder."""
+        tool = self.registry / "tools" / "paper_records.py"
+        if not tool.is_file():
+            return self.dataset.folder
+        found = subprocess.run([sys.executable, str(tool), "key", self.dataset.folder], cwd=self.registry,
+                               capture_output=True, text=True, env=self.env())
+        if found.returncode:
+            raise Stop(f"The registry found no paper for {self.dataset.folder}: {found.stderr.strip()}")
+        return found.stdout.strip()
+
+    @property
+    def key(self) -> str:
+        if not self.state.get("key"):   # a run prepared by an earlier version
+            self.state["key"] = self.paper_key()
+        return self.state["key"]
 
     # Running roles ----------------------------------------------------------------------------------------
 
@@ -355,7 +375,7 @@ class Run:
         return agent.returncode
 
     def transcript(self, role: str) -> None:
-        dest = self.registry / "transcripts" / self.dataset.folder
+        dest = self.registry / "transcripts" / self.key
         dest.mkdir(parents=True, exist_ok=True)
         subprocess.run([sys.executable, str(self.registry / "tools" / "transcript.py"), str(self.logs / f"{role}.jsonl"),
                         str(dest / f"{role}.md"), "--omit", "paper/", "--report", str(dest / f"{role}-report.md"),
@@ -420,8 +440,8 @@ class Run:
 
     def claims_ready(self) -> bool:
         import yaml
-        from .report import files_in
-        files = files_in(self.registry / "claims" / self.dataset.folder, "*.yaml")
+        from .report import claims_files
+        files = claims_files(self.registry, self.key)
         if not files:
             return False
         checks = (yaml.safe_load(files[0].read_text()) or {}).get("checks") or [{}]
@@ -429,7 +449,7 @@ class Run:
 
     def open_questions(self) -> int:
         import yaml
-        path = self.registry / "questions" / f"{self.dataset.folder}.yaml"
+        path = self.registry / "questions" / f"{self.key}.yaml"
         if not path.is_file():
             return 0
         q = yaml.safe_load(path.read_text()) or []
@@ -446,13 +466,14 @@ class Run:
         # The claims, unless the registry already has a checked claims file for this dataset (an archive's).
         if not self.claims_ready() or self.state["roles"].get("claims"):
             self.role("claims")
-            if not (self.registry / "claims" / self.dataset.folder).is_dir():
+            from .report import claims_files
+            if not claims_files(self.registry, self.key):
                 raise Stop("The reader wrote no claims file: see "
-                           f"{self.registry / 'transcripts' / self.dataset.folder / 'claims-report.md'}.")
+                           f"{self.registry / 'transcripts' / self.key / 'claims-report.md'}.")
             self.role("claims-check")
             if not self.claims_ready():
                 raise Stop("The claims check says the claims file is not ready: see "
-                           f"{self.registry / 'transcripts' / self.dataset.folder / 'claims-check-report.md'}.")
+                           f"{self.registry / 'transcripts' / self.key / 'claims-check-report.md'}.")
         self.role("author")
         if self.full:
             if self.open_questions() or self.state["roles"].get("answer"):
