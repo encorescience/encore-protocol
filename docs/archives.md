@@ -316,6 +316,68 @@ The workflows take a dataset in any of these forms.
   under `related`, and gives in the notebook header the SHA-256 of each file
   read.
 
+## OSF
+
+- **Datasets.** A public project, component or registration on OSF
+  (`osf.io`), the Open Science Framework of the Center for Open Science, named
+  by its GUID: `https://osf.io/qpc2d/` is `OSF:qpc2d`, in folders `osf-qpc2d`.
+  GUIDs are five characters and ignore case. A project's DOI, when its owners
+  have had one minted, is `10.17605/OSF.IO/<GUID>`; a registration always has
+  one. Most public OSF projects hold study materials, preregistrations or
+  course pages rather than data, so the registry's list, `targets/osf.json`,
+  is built from chosen GUIDs by `tools/build_osf_targets.py`, which reads each
+  project's metadata, files and papers from OSF's public API v2. A project
+  rarely names its paper in its metadata. The builder takes the papers from a
+  registration's article DOI and from the preprints (PsyArXiv and the other
+  OSF preprint servers) that name the project as their supplemental
+  materials, with the journal article each preprint was published as;
+  otherwise give the paper's DOI to the builder (`<GUID>=<paper DOI>`). A
+  preprint's GUID may also be given: the builder takes the project it links.
+- **Components.** A project can hold components, each a node with its own
+  GUID, files, contributors and sometimes its own DOI, nested to any depth. A
+  dataset is often spread across them (one component per experiment, or one
+  for data and one for code). The builder lists the files of every public
+  component below the project with the component's GUID first in the path
+  (`xyz23/licks.csv`), and the components themselves, with their titles,
+  under `components`. A component can also be a target of its own.
+- **Versions.** A project is not versioned as a whole. Each file in OSF
+  Storage keeps its own numbered versions, with an MD5 and a SHA-256 for each,
+  and an older version stays downloadable. So the target list pins a dataset
+  file by file: each file's `version` and hashes, as the builder read them.
+  `published_version` is the time the project was last modified when the list
+  was built (`date_modified`), which changes with any edit, files or not, so
+  it dates the list rather than pinning anything. A registration is a frozen
+  copy of a project, its files and components, and its `published_version` is
+  the time it was registered. Record `published_version` under
+  `dataset: version` and the DOI, if any, under `dataset: doi`, and give in
+  the notebook header the version and SHA-256 of each file read.
+- **Reading.** Everything in a public project is readable with no account.
+  The API is JSON:API: an item's related listings are at
+  `relationships.<name>.links.related.href`, and a listing is paged, with the
+  next page at `links.next` (`page[size]=100` is the largest page). List a
+  project's storage providers at `https://api.osf.io/v2/nodes/<GUID>/files/`
+  (`registrations/` for a registration); each provider's top folder, and each
+  folder in it, lists its items at its `relationships.files` address. A
+  file's attributes give its `materialized_path`, `size`, `current_version`
+  and `extra.hashes` (`md5`, `sha256`), and its `links.download` is a
+  WaterButler address on `files.osf.io` (or a regional host such as
+  `files.de1.osf.io`). Add `?version=<n>` to the download address to read a
+  given version. Open the file with `fsspec.open(url, block_size=2**20)` or
+  `pandas`, and read it into memory; do not download whole files to disk. The
+  project's wiki (`/nodes/<GUID>/wikis/`) and a README among its files, when
+  there is one, describe the data; the description in the target list is the
+  project's own.
+- **Storage add-ons.** Besides OSF Storage (`osfstorage`), a project can link
+  folders from GitHub, Google Drive, Dropbox, Box, Figshare, Amazon S3 and
+  others. Their files are listed and read through the same API, named in the
+  target list with the provider first (`github/analysis.py`), but OSF does not
+  version them: what an add-on folder holds can change with no new version,
+  and its files may have no hashes. The builder warns when a project has such
+  files. A GitHub, GitLab or Bitbucket add-on is listed under `code`.
+- **In an entry.** The entry names the dataset as
+  `osf:<GUID>/<published_version>` under `related`, and gives in the notebook
+  header the version and SHA-256 of each file read.
+
 ## Local and remote (`encore check`)
 
 Two kinds of dataset exist only inside a run of `encore check`

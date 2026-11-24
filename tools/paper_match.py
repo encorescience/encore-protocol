@@ -50,12 +50,14 @@ PREPRINTS = ("10.1101/", "10.64898/", "10.48550/", "10.21203/")
 
 # Datasets a paper names. A DANDI dataset by its six digits after "DANDI", "dandiset", its URL or its DOI;
 # OpenNeuro by its accession; SPARC by its page on sparc.science or a version's DOI (10.26275/xxxx-xxxx), which
-# names it only through the target list's version_dois.
+# names it only through the target list's version_dois; OSF by its page on osf.io or its DOI (10.17605/OSF.IO/<GUID>).
 DANDI_ID = re.compile(r"(?:dandiarchive\.org/dandiset/|10\.48324/dandi\.|\bdandi(?:set)?\s*(?:archive\s*)?[:#]?\s*)"
                       r"(\d{6})\b", re.I)
 OPENNEURO_ID = re.compile(r"\b(ds\d{6})\b", re.I)
 SPARC_PAGE = re.compile(r"sparc\.science/datasets/(\d+)", re.I)
 SPARC_DOI = re.compile(r"\b(10\.26275/[a-z0-9]{4}-[a-z0-9]{4})\b", re.I)
+# A preprint server's DOI on OSF (PsyArXiv's 10.31234/osf.io/<GUID>) names the preprint, not a project.
+OSF_ID = re.compile(r"(?:(?<![0-9]/)\bosf\.io/|10\.17605/osf\.io/)([a-z0-9]{5})(?![a-z0-9])", re.I)
 HEAD = 6000   # the title is looked for in the first characters of the text: the header and the title page
 
 
@@ -107,9 +109,11 @@ def choose(target: dict, fix: dict, match: dict | None) -> tuple[str, list[dict]
 
 
 def archives_named(text: str) -> list[str]:
-    """The datasets a paper's text names, as DANDI:<id>, OpenNeuro:<id>, SPARC:<id> or SPARC:doi:<version DOI>."""
+    """The datasets a paper's text names, as DANDI:<id>, OpenNeuro:<id>, SPARC:<id>, SPARC:doi:<version DOI> or
+    OSF:<GUID>."""
     found = [f"DANDI:{m}" for m in DANDI_ID.findall(text)] + [f"OpenNeuro:{m.lower()}" for m in OPENNEURO_ID.findall(text)]
     found += [f"SPARC:{m}" for m in SPARC_PAGE.findall(text)] + [f"SPARC:doi:{m.lower()}" for m in SPARC_DOI.findall(text)]
+    found += [f"OSF:{m.lower()}" for m in OSF_ID.findall(text)]
     return list(dict.fromkeys(found))
 
 
@@ -139,8 +143,9 @@ def check(target: dict, paper: dict, text: str | None) -> dict:
     me = this_dataset(target)
     # A SPARC dataset is also named by any of its versions' DOIs. An identifier found anywhere in the text counts
     # too, but not a short number (SPARC's ids, 206), which any paper holds by chance; Figshare's eight digits do.
+    # Nor an OSF GUID, five letters and digits that an ordinary word can spell ("stage"): only its link or DOI.
     mine = {me} | {f"SPARC:doi:{d.lower()}" for d in target.get("version_dois") or []}
-    short_number = target["id"].isdigit() and len(target["id"]) < 6
+    short_number = (target["id"].isdigit() and len(target["id"]) < 6) or target.get("archive") == "osf"
     names_this = bool(mine & set(named)) or (target.get("archive") != "dandi" and not short_number
                                              and target["id"].lower() in text.lower())
     others = [a for a in named if a not in mine]

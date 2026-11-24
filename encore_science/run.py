@@ -64,7 +64,7 @@ class Stop(Exception):
 
 @dataclass
 class Dataset:
-    archive: str        # local, remote, or an archive the registry knows (dandi, crcns, ebrains, dryad, figshare, openneuro, sparc)
+    archive: str        # local, remote, or an archive the registry knows (dandi, crcns, ebrains, dryad, figshare, openneuro, osf, sparc)
     id: str
     location: str       # the directory or URL; for an archive, its key
     fingerprint: str    # stands in for a version; "" for an archive

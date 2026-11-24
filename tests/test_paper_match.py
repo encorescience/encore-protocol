@@ -76,6 +76,19 @@ def test_a_sparc_dataset_is_named_by_its_page_or_any_version_doi_and_not_by_a_ba
     assert other["checks"]["names_others"] == ["SPARC:61"] and "verdict" not in other
 
 
+def test_an_osf_project_is_named_by_its_page_or_doi_and_not_by_a_word_that_spells_its_guid():
+    # tools/paper_match.py: an OSF GUID is five letters and digits, which an ordinary word can spell; a paper names
+    # the project by its page on osf.io or its DOI. A preprint's DOI on OSF (PsyArXiv's) names the preprint.
+    assert pm.archives_named("Data: https://osf.io/AbCdE/ and 10.17605/OSF.IO/XYZ23; preprint 10.31234/osf.io/pre12; "
+                             "see https://osf.io/preprints/psyarxiv/pre12.") == ["OSF:abcde", "OSF:xyz23"]
+    osf = {"archive": "osf", "id": "stage", "key": "osf:stage", "folder": "osf-stage", "name": "A project",
+           "papers": []}
+    linked = pm.check(osf, paper("10.1/a", relation="Describes"), text("Data: https://osf.io/stage/."))
+    assert linked["checks"]["names_this"] and linked["verdict"] == "primary"
+    by_chance = pm.check(osf, paper("10.1/a", relation="Describes"), text("At this stage, mice were trained."))
+    assert not by_chance["checks"]["names_this"] and "verdict" not in by_chance
+
+
 def test_a_paper_whose_text_does_not_carry_its_title_is_left_for_the_agent():
     # A mistyped DOI: the text is another paper.
     row = pm.check(target([]), paper("10.1/a"), "Energy complexity of convolutional neural networks\n\nNo data.")

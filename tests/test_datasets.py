@@ -83,6 +83,28 @@ def test_every_archive_is_an_adapter_with_a_section_in_the_docs():
         assert bool(archive.stage) == bool(archive.secrets), f"{key}: stage() and secrets go together"
 
 
+def test_an_osf_project_is_named_by_its_guid_in_lower_case_and_read_directly():
+    from archives import ALL
+    key = datasets.parse("OSF:QPC2D")
+    assert key == "osf:qpc2d" and datasets.folder(key) == "osf-qpc2d" and datasets.parse("osf-qpc2d") == key
+    assert datasets.label(key) == "OSF:qpc2d" and datasets.archive_name(key) == "OSF"
+    osf = ALL["osf"]
+    assert osf.stage is None and not osf.secrets and osf.builder == "tools/build_osf_targets.py"
+    assert {"api.osf.io", "files.osf.io"} <= set(osf.hosts)
+    access = osf.access.format(id="qpc2d", api_type="registrations", published_version="2023-02-03T04:05:06")
+    assert "https://api.osf.io/v2/registrations/qpc2d/files/" in access and "?version=<version>" in access
+
+
+def test_osf_targets_pin_each_file_by_its_version_and_hashes():
+    # targets/osf.json, when the registry has one (tools/build_osf_targets.py writes it).
+    found = [t for t in datasets.targets() if t["archive"] == "osf"]
+    for t in found:
+        assert t["key"] == f'osf:{t["id"]}' and t["id"] == t["id"].lower() and len(t["id"]) == 5
+        assert t["api_type"] in ("nodes", "registrations") and t["published_version"] and t["papers"]
+        assert all(f["version"] for f in t["files"] if f["provider"] == "osfstorage")
+        assert f'https://api.osf.io/v2/{t["api_type"]}/{t["id"]}/files/' in datasets.access(t["key"])
+
+
 def test_staging_skips_archives_agents_read_directly_and_needs_its_secrets(monkeypatch, capsys):
     import stage_files
     monkeypatch.delenv("DRYAD_CLIENT_ID", raising=False)
