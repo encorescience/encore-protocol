@@ -59,9 +59,10 @@ on:
         type: string
         default: ""
       # A run from encore-runner, or a fork of it (docs/outside-runs.md): the registry it reads, which it cannot
-      # write to. The run starts from the attempt's branch there, and its results are signed and uploaded as a
-      # submission (the `submit` job) for the registry's intake to take; nothing is pushed. Empty: the caller is the
-      # registry itself, and the run commits to the attempt's branch (the `commit` job).
+      # write to. The attempt's state between runs is on the caller's own branch attempt/<paper>: the run starts
+      # from it, and the `submit` job signs the run's results, uploads them as a submission and adds them to that
+      # branch. The registry takes the whole attempt at the end, from the signed submissions. Empty: the caller is
+      # the registry itself, and the run commits to the attempt's branch there (the `commit` job).
       registry:
         type: string
         default: ""
@@ -77,6 +78,12 @@ on:
         required: false
       # The API key under its usual name, for a caller outside CatalystNeuro (docs/outside-runs.md).
       ANTHROPIC_API_KEY:
+        required: false
+      # The paper store's deploy key, for a caller in another organization (docs/outside-runs.md). GitHub's
+      # `secrets: inherit` and a caller's environment secrets reach a reusable workflow only within one
+      # organization, so a fork outside encorescience passes the key by name. The registry's own runs read it
+      # from their `papers` environment, as before.
+      PAPERS_DEPLOY_KEY:
         required: false
 
 permissions:
@@ -116,6 +123,7 @@ jobs:
       flagged: ${{ steps.flag.outputs.flagged }}
       account: ${{ steps.acct.outputs.account }}
       base_sha: ${{ steps.start.outputs.base_sha }}
+      state: ${{ steps.start.outputs.state }}
       protocol_ref: ${{ steps.base.outputs.protocol_ref }}
     steps:
       - uses: actions/checkout@v4
@@ -147,6 +155,9 @@ jobs:
 
       - name: Start from the attempt's branch if it exists
         id: start
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WORKFLOW_SHA: ${{ job.workflow_sha }}
         run: |
           # The paper's key (docs/paper-first.md) names its files and branch.
           FOLDER=$PAPER
@@ -160,12 +171,47 @@ jobs:
           { echo "FOLDER=$FOLDER"; echo "BRANCH=$BRANCH"; } >> "$GITHUB_ENV"
           echo "folder=$FOLDER" >> "$GITHUB_OUTPUT"
           if [ -n "$REGISTRY" ]; then
-            # From encore-runner, or a fork of it (docs/outside-runs.md): the author's first run of an attempt, and
-            # nothing else; the verification rounds and what follows them run in the registry. The author starts from
-            # this repository's own attempt branch in the registry (the claims it delivered), or from the claims main has.
+            # From encore-runner, or a fork of it (docs/outside-runs.md). The registry is read and never written:
+            # the attempt's state between runs is on this repository's own branch (tools/submission.py).
             [[ "$REGISTRY" =~ ^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$ ]] || { echo "::error::Not a repository: '$REGISTRY'"; exit 1; }
-            [ "$ROLE" = author ] && [ -z "$REPLICATE" ] \
-              || { echo "::error::From encore-runner, attempt.yml runs the author only, with no replicate; $ROLE runs in the registry"; exit 1; }
+            [ -z "$REPLICATE" ] || { echo "::error::No replicates from encore-runner"; exit 1; }
+            # An attempt under way in the registry is named, on its branch there, with the repository making it
+            # (Encore-Source). Two repositories do not attempt one paper at once.
+            if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null; then
+              git fetch -q --depth 1 origin "$BRANCH"
+              source=$(git log -1 --format='%(trailers:key=Encore-Source,valueonly)' FETCH_HEAD | tr -d '[:space:]')
+              [ "$source" = "$GITHUB_REPOSITORY" ] || {
+                echo "::error::The attempt on $FOLDER under way in $REGISTRY is not this repository's (${source:-begun in the registry}); wait for it to finish"; exit 1; }
+            fi
+            git -C .protocol show "$WORKFLOW_SHA:tools/submission.py" > "$RUNNER_TEMP/submission.py"
+            # This repository, read with the job's own token. (RUNNER_REMOTE: another address, for the tests.)
+            runner=${RUNNER_REMOTE:-"https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"}
+            base=$MAIN_SHA
+            # 0: the branch exists; 2: it does not; anything else: the question failed, and the run must not
+            # start as if the attempt were new.
+            there=0; git ls-remote --exit-code --heads "$runner" "$BRANCH" >/dev/null 2>&1 || there=$?
+            [ $there = 0 ] || [ $there = 2 ] || { echo "::error::Could not read the branches of $GITHUB_REPOSITORY"; exit 1; }
+            if [ $there = 0 ]; then
+              # The state the runs before this one left, over the registry's commit the attempt began at. The
+              # clone's own git folder, which holds the address with the token, goes before the agent starts.
+              git clone -q --depth 1 --branch "$BRANCH" "$runner" "$RUNNER_TEMP/state" && rm -rf "$RUNNER_TEMP/state/.git"
+              base=$(python3 -c 'import json, sys; print(json.load(open(sys.argv[1]))["base_sha"])' "$RUNNER_TEMP/state/.encore/attempt.json")
+              [[ "$base" =~ ^[0-9a-f]{40}$ ]] || { echo "::error::The ledger of $BRANCH names no commit of $REGISTRY"; exit 1; }
+              git fetch -q --depth 1 origin "$base" && git checkout -q -f --detach FETCH_HEAD
+              python3 "$RUNNER_TEMP/submission.py" lay "$RUNNER_TEMP/state" --paper "$FOLDER"
+              # Committed here, and nowhere else, so that what the run changes is told from what it started with.
+              for d in claims attempts entries questions transcripts docs/pilot-notes summaries; do [ ! -e "$d" ] || git add -A -- "$d"; done
+              git -c user.name=encore -c user.email=encore@users.noreply.github.com commit -q --allow-empty -m "The attempt's state"
+              git restore --worktree --source "$MAIN_SHA" -- tools   # the registry's own tools, as main has them
+              rm -rf "$RUNNER_TEMP/state"
+            elif [ "$ROLE" != author ]; then
+              echo "::error::$GITHUB_REPOSITORY has no branch $BRANCH; run the author first"; exit 1
+            fi
+            [ -f "claims/$FOLDER.yaml" ] || { echo "::error::No claims for $FOLDER: run claims and claims-check first"; exit 1; }
+            echo "base_sha=$base" >> "$GITHUB_OUTPUT"
+            echo "state=$(python3 "$RUNNER_TEMP/submission.py" digest --paper "$FOLDER")" >> "$GITHUB_OUTPUT"
+            git log --oneline -1
+            exit 0
           fi
           if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null; then
             git fetch --depth 1 origin "$BRANCH" && git checkout -f -B "$BRANCH" FETCH_HEAD
@@ -174,16 +220,6 @@ jobs:
             git restore --worktree --source "$MAIN_SHA" -- tools   # the registry's own tools, as main has them
           elif [ "$ROLE" != author ]; then
             echo "::error::No branch $BRANCH; run the author first"; exit 1
-          fi
-          if [ -n "$REGISTRY" ] && [ "$(git branch --show-current)" = "$BRANCH" ]; then
-            # The registry's intake names, on each commit it makes to an attempt's branch, the repository whose run it
-            # took (Encore-Source). A run continues only an attempt that its own repository's runs began.
-            source=$(git log -1 --format='%(trailers:key=Encore-Source,valueonly)' | tr -d '[:space:]')
-            [ "$source" = "$GITHUB_REPOSITORY" ] || {
-              echo "::error::The attempt on $FOLDER under way in $REGISTRY is not this repository's (${source:-begun in the registry}); wait for it to finish"; exit 1; }
-          fi
-          if [ -n "$REGISTRY" ] && [ ! -f "claims/$FOLDER.yaml" ]; then
-            echo "::error::$REGISTRY has no claims for $FOLDER: run claims and claims-check, and deliver them, first"; exit 1
           fi
           echo "base_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           git log --oneline -1
@@ -648,25 +684,30 @@ jobs:
 
   # A run from encore-runner, or a fork of it (docs/outside-runs.md), cannot write to the registry. Its results, as the
   # commit job would have committed them, are gathered into one file (tools/submission.py), which GitHub signs as made
-  # by this workflow, in the caller's repository and run. The registry's intake checks that signature, so that what it
-  # takes was made by this workflow from the commit it names, and was not edited after.
+  # by this workflow, in the caller's repository and run. The file carries the digest of the state the run started
+  # from. The job then adds the results to the attempt's state, on the caller's own branch attempt/<paper>, with the
+  # run in its ledger. At the end of the attempt the registry's intake checks each signature and lays the submissions
+  # one over the other, so that what it takes was made by this workflow, run after run, and was not edited between.
   submit:
     needs: run
     if: always() && inputs.registry != '' && needs.run.outputs.started == 'true' && needs.run.outputs.flagged != 'true'
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write       # to push the state to the caller's own branch
       id-token: write       # to sign the submission
       attestations: write   # to keep the signature with the caller's repository
     env:
       FOLDER: ${{ needs.run.outputs.folder }}
       ACCOUNT: ${{ needs.run.outputs.account || inputs.account || 'verified' }}
       BASE_SHA: ${{ needs.run.outputs.base_sha }}
+      STARTED_FROM: ${{ needs.run.outputs.state }}
+      BRANCH: attempt/${{ needs.run.outputs.folder }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
     steps:
       - uses: actions/checkout@v4
         with:
           repository: ${{ inputs.registry }}
-          ref: ${{ needs.run.outputs.base_sha }}   # the registry's commit the run started from
+          ref: ${{ needs.run.outputs.base_sha }}   # the registry's commit the attempt began at
           persist-credentials: false
           fetch-depth: 1
 
@@ -691,8 +732,27 @@ jobs:
           path: out
 
       - name: Gather the run's changes, as the commit job would commit them
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          sub="$RUNNER_TEMP/submission.py"
+          runner="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          state="$RUNNER_TEMP/state"
+          # The state the run started from: this repository's branch, over the registry's commit, as in the run job.
+          there=0; git ls-remote --exit-code --heads "$runner" "$BRANCH" >/dev/null 2>&1 || there=$?
+          [ $there = 0 ] || [ $there = 2 ] || { echo "::error::Could not read the branches of $GITHUB_REPOSITORY"; exit 1; }
+          if [ $there = 0 ]; then
+            git clone -q --depth 1 --branch "$BRANCH" "$runner" "$state"
+            python "$sub" lay "$state" --paper "$FOLDER"
+            for d in claims attempts entries questions transcripts docs/pilot-notes summaries; do [ ! -e "$d" ] || git add -A -- "$d"; done
+            git -c user.name=encore -c user.email=encore@users.noreply.github.com commit -q --allow-empty -m "The attempt's state"
+          else
+            git init -q -b "$BRANCH" "$state"
+          fi
+          before=$(python "$sub" digest --paper "$FOLDER")
+          [ "$before" = "$STARTED_FROM" ] || {
+            echo "::error::$BRANCH changed while the run was going (it started from $STARTED_FROM and the branch is now $before); run the role again"; exit 1; }
           # Refuse anything that is not this paper's, as the commit job does.
           others=$(ls out/transcripts | grep -vx "$FOLDER" || true)
           [ -z "$others" ] || { echo "::error::Transcripts for other papers: $others"; exit 1; }
@@ -702,6 +762,7 @@ jobs:
           fi
           if [ -s out/changes.patch ]; then
             allowed="^(attempts/$FOLDER-[0-9]{2}\.yaml$|claims/$FOLDER\.yaml$|entries/$FOLDER/|questions/$FOLDER\.yaml$|questions/$FOLDER/[^/]+\.yaml$)"
+            [ "$ROLE" != recorder ] || allowed="^(docs/pilot-notes|summaries)/$FOLDER-[0-9]{2}\.md$"
             stray=$(git apply --numstat --exclude=README.md out/changes.patch | cut -f3 | grep -vE "$allowed" || true)
             [ -z "$stray" ] || { echo "::error::Changes outside paper $FOLDER: $stray"; exit 1; }
             if git apply --numstat --include=README.md out/changes.patch | grep -q .; then
@@ -711,14 +772,14 @@ jobs:
           fi
           # A transcript with nothing but its title means the agent never started; keep it out.
           for f in out/transcripts/*/*.md; do [ -e "$f" ] || continue; [ "$(wc -l < "$f")" -gt 2 ] || rm "$f"; done
-          cp -r out/transcripts . && git add -A -- claims attempts entries questions transcripts
-          python "$RUNNER_TEMP/submission.py" pack --paper "$FOLDER" --out submission \
+          cp -r out/transcripts . && git add -A -- transcripts
+          python "$sub" pack --paper "$FOLDER" --out submission \
             --meta role="$ROLE" --meta result="${{ needs.run.result }}" --meta account="$ACCOUNT" \
-            --meta registry="$REGISTRY" --meta base_sha="$BASE_SHA" \
+            --meta registry="$REGISTRY" --meta base_sha="$BASE_SHA" --meta state_before="$before" \
             --meta protocol_ref="${{ needs.run.outputs.protocol_ref }}" --meta repository="$GITHUB_REPOSITORY" \
-            --meta run_id="$GITHUB_RUN_ID" --meta run_attempt="$GITHUB_RUN_ATTEMPT" \
-            --meta run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-          python "$RUNNER_TEMP/submission.py" show submission/submission.tar.gz
+            --meta run_id="$GITHUB_RUN_ID" --meta run_attempt="$GITHUB_RUN_ATTEMPT" --meta run_url="$RUN_URL"
+          python "$sub" show submission/submission.tar.gz
+          { echo "STATE_BEFORE=$before"; echo "STATE_AFTER=$(python "$sub" digest --paper "$FOLDER")"; } >> "$GITHUB_ENV"
 
       - name: Sign the submission
         id: sign
@@ -727,18 +788,34 @@ jobs:
           subject-path: submission/submission.tar.gz
 
       - name: Keep the signature with the submission
-        run: |
-          cp "${{ steps.sign.outputs.bundle-path }}" submission/submission.sigstore.json
-          {
-            echo "### Submission: $FOLDER, $ROLE"
-            echo "Signed: ${{ steps.sign.outputs.attestation-url }}"
-            echo
-            echo "The registry takes it with its intake workflow, given this run's address:"
-            echo "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-          } >> "$GITHUB_STEP_SUMMARY"
+        run: cp "${{ steps.sign.outputs.bundle-path }}" submission/submission.sigstore.json
 
       - uses: actions/upload-artifact@v4
+        id: upload
         with:
-          name: submission
+          # Named for the paper and role: a whole attempt can be one workflow run (sequence.yml).
+          name: submission-${{ needs.run.outputs.folder }}-${{ inputs.role }}
           path: submission
-          retention-days: 30
+          retention-days: 90
+
+      - name: Add the results to the attempt's state, on this repository's branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT: ${{ steps.upload.outputs.artifact-id }}
+        run: |
+          set -euo pipefail
+          sub="$RUNNER_TEMP/submission.py"; state="$RUNNER_TEMP/state"
+          python "$sub" lay . --into "$state" --paper "$FOLDER"
+          python "$sub" record "$state" --paper "$FOLDER" --registry "$REGISTRY" --base-sha "$BASE_SHA" --role "$ROLE" \
+            --run-url "$RUN_URL" --result "${{ needs.run.result }}" --before "$STATE_BEFORE" --after "$STATE_AFTER" \
+            --artifact "$ARTIFACT"
+          cd "$state" && git add -A
+          git -c user.name='github-actions[bot]' -c user.email='github-actions[bot]@users.noreply.github.com' \
+            commit -q -m "Agent run on $FOLDER: $ROLE (${{ needs.run.result }})" -m "Run: $RUN_URL" -m "Account: $ACCOUNT"
+          git push -q "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:refs/heads/$BRANCH"
+          {
+            echo "### $FOLDER, $ROLE"
+            echo "Signed: ${{ steps.sign.outputs.attestation-url }}"
+            echo
+            echo "The results are on this repository's branch \`$BRANCH\`, from which the next run starts."
+          } >> "$GITHUB_STEP_SUMMARY"

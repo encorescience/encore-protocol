@@ -147,3 +147,51 @@ def test_a_submission_for_another_paper_is_refused(tmp_path):
     path = forge(tmp_path / "s.tar.gz", [member("manifest.json", manifest({}, paper="other-2019"))])
     with pytest.raises(SystemExit, match="not 'demo-2020'"):
         submission.read(path, "demo-2020")
+
+
+# An attempt's state between runs, on the runner's own branch.
+
+def test_a_state_is_the_papers_files_and_its_digest_changes_with_any_of_them(registry):
+    assert sorted(submission.state(registry, "demo-2020")) == ["attempts/demo-2020-01.yaml",
+                                                               "transcripts/demo-2020/old.md"]
+    before = submission.digest(registry, "demo-2020")
+    change(registry, {"claims/other-2019.yaml": "another paper's\n", "README.md": "changed\n"})
+    assert submission.digest(registry, "demo-2020") == before        # not the paper's files
+    change(registry, {"transcripts/demo-2020/old.md": "old, edited\n"})
+    edited = submission.digest(registry, "demo-2020")
+    assert edited != before
+    change(registry, {"summaries/demo-2020-01.md": "the recorder's notes\n"})
+    assert submission.digest(registry, "demo-2020") not in (before, edited)
+
+
+def test_laying_a_state_replaces_the_papers_files_and_leaves_the_rest(registry, tmp_path):
+    state = tmp_path / "state"
+    for path, text in {"claims/demo-2020.yaml": "claims\n", "transcripts/demo-2020/claims.md": "t\n",
+                       ".encore/attempt.json": "{}\n", "claims/other-2019.yaml": "not laid\n"}.items():
+        (state / path).parent.mkdir(parents=True, exist_ok=True)
+        (state / path).write_text(text)
+    assert submission.lay(state, registry, "demo-2020") == 2
+    # The registry's own copies of the paper's files went, the state's came, and no other file moved.
+    assert sorted(submission.state(registry, "demo-2020")) == ["claims/demo-2020.yaml",
+                                                               "transcripts/demo-2020/claims.md"]
+    assert (registry / "claims/other-2019.yaml").read_text() == "x\n" and not (registry / ".encore").exists()
+    assert submission.digest(registry, "demo-2020") == submission.digest(state, "demo-2020")
+
+
+def test_the_ledger_lists_the_runs_in_order_and_keeps_to_one_attempt(tmp_path):
+    run = {"role": "claims", "run_url": "https://github.com/lab/encore-runner/actions/runs/1", "result": "success",
+           "artifact": "7", "state_before": "a" * 64, "state_after": "b" * 64}
+    submission.record(tmp_path, "demo-2020", "encorescience/encore-registry", "c" * 40, run)
+    ledger = submission.record(tmp_path, "demo-2020", "encorescience/encore-registry", "c" * 40,
+                               {**run, "role": "claims-check"})
+    assert [r["role"] for r in ledger["runs"]] == ["claims", "claims-check"] and ledger["base_sha"] == "c" * 40
+    assert json.loads((tmp_path / submission.LEDGER).read_text()) == ledger
+    with pytest.raises(SystemExit, match="base_sha"):
+        submission.record(tmp_path, "demo-2020", "encorescience/encore-registry", "d" * 40, run)
+
+
+def test_the_recorders_notes_are_the_papers_and_another_papers_are_not():
+    assert submission.belongs("docs/pilot-notes/demo-2020-02.md", "demo-2020")
+    assert submission.belongs("summaries/demo-2020-02.md", "demo-2020")
+    assert not submission.belongs("summaries/other-2019-01.md", "demo-2020")
+    assert not submission.belongs("docs/protocol.md", "demo-2020")
