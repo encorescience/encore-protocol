@@ -99,7 +99,7 @@ def fake_git(tmp_path: Path) -> dict:
     return {**os.environ, "PATH": f"{bin_}:{os.environ['PATH']}", "PAPERS_DEPLOY_KEY": "not a key"}
 
 
-@pytest.mark.parametrize("repo,url", [(None, "git@github.com:catalystneuro/registry-papers.git"),
+@pytest.mark.parametrize("repo,url", [(None, "git@github.com:encorescience/registry-papers.git"),
                                       ("acme-lab/encore-papers", "git@github.com:acme-lab/encore-papers.git")])
 def test_get_papers_clones_the_store_the_caller_names(tmp_path, repo, url):
     env = fake_git(tmp_path)

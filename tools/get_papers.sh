@@ -19,8 +19,9 @@ trap 'rm -rf "$tmp"' EXIT
 printf '%s\n' "$PAPERS_DEPLOY_KEY" > "$key"; chmod 600 "$key"
 export GIT_SSH_COMMAND="ssh -i $key -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
 export GIT_LFS_SKIP_SMUDGE=1
-# The store is CatalystNeuro's unless the caller names its own (ENCORE_PAPERS_REPO, owner/name; docs/outside-runs.md).
-repo=${ENCORE_PAPERS_REPO:-catalystneuro/registry-papers}
+# The store is Encore's own (encorescience/registry-papers) unless the caller names its own (ENCORE_PAPERS_REPO,
+# owner/name; docs/outside-runs.md).
+repo=${ENCORE_PAPERS_REPO:-encorescience/registry-papers}
 [[ "$repo" =~ ^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$ ]] || { echo "::error::Not a repository: '$repo'"; exit 1; }
 git clone -q --depth 1 --filter=blob:none --sparse "git@github.com:$repo.git" "$store"
 IFS=, read -r -a folders <<<"$dandiset"
