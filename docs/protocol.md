@@ -1,6 +1,6 @@
 # Protocol for an attempt
 
-Version: `pilot-18`. Record this version in the attempt's provenance.
+Version: `pilot-19`. Record this version in the attempt's provenance.
 
 This is what agents, or people, do to attempt a target and deposit the
 result. A target is a dataset in a public archive and a paper it names. How
@@ -229,7 +229,11 @@ Do this before any analysis.
    file gives it. If it cites none, pin the most recent published version,
    unless an earlier one matches the claims file's description better. Say
    why in the notebook's header. If versions differ in content the analysis
-   uses, show the difference.
+   uses, show the difference. When the version you pin is not the newest
+   published one, look for each problem you find in the data in the newest
+   version too, and record which versions have it (step 5, `findings`): a
+   problem that a later version fixed matters for the paper, and no longer
+   for someone who takes the dataset today.
 4. Decide what comes from outside the dataset. Data from elsewhere may be
    used only when the claims file says the paper relies on it, it is public,
    and it is pinned: a DOI, or a repository at a commit. Record each under
@@ -381,6 +385,14 @@ session where this could not be established. A description that a check
 supports but does not prove is reported as consistent with the data, not as
 shown. Where they disagree, trust the data, say so in the notebook,
 and record it as a finding.
+
+Show each problem in the data with code. Give it a cell of its own, tagged
+`finding-<short-name>`, that loads only what it needs and prints the values
+that show the problem (the two recordings' correlation, the timestamps that
+are not seconds, the counts that differ), in a few lines that a reader could
+copy and run. The finding in the attempt record names that cell, and the
+dataset's page links to it, as a claim's outcome links to the cell that
+tests it.
 
 ### 3. Write the entry
 
@@ -569,6 +581,24 @@ Write `attempts/<paper>-<nn>.yaml`, numbered after the paper's earlier attempts.
   | `minor` | The problem is evident from the values, or easy to work around. | A wrong unit label or conversion factor (volts that hold millivolts, meters that hold centimetres, degrees that hold radians). A small difference in counts. A missing description that the data make clear. Spike times that only need sorting. |
   | `none` | No problem. | A check that passed. A note that the data agree with the paper. |
 
+  Give a finding about the data the code that shows it: `notebook`, the
+  notebook in the entry, and `output`, the tag of the cell whose output shows
+  the problem (step 2). A `critical` or `major` finding must have one, since
+  it tells a data owner that something needs fixing, and the cell is what they
+  run to see it and to check their fix. A `minor` finding has one where a few
+  lines show it.
+
+  A finding is about the version of the dataset the attempt read. When it was
+  seen in another version, give `versions`: every version it was seen in, as
+  the archive names them, including the one the attempt read if it is there
+  too. When you looked for it in a later version and it was gone, give
+  `fixed_in`, the first such version. The finding stays in the record: the
+  dataset's page then shows it as fixed, under the version that had it, and
+  it still counts for a paper that used that version. A check that only
+  passed in the newer version is not a finding of its own; it is the
+  `fixed_in` of the finding it settles. With several datasets, give such a
+  finding the one dataset its versions are of.
+
   A wrong unit is `minor` however large the factor, because the values show
   it. When a finding lists several problems, rate the worst. When the data
   could not settle whether something is wrong (a clock that could not be
@@ -582,6 +612,10 @@ Write `attempts/<paper>-<nn>.yaml`, numbered after the paper's earlier attempts.
   to the verifier's, or keeps it and says why under `response`. Findings keep
   their order from then on, and a new one goes at the end. The site presents
   a critical finding as one only when a verifier agreed.
+
+  Attempts made before `pilot-19` were not asked for a finding's code or
+  versions, and a finding without `versions` is about the version its attempt
+  read.
 
   Attempts made before `pilot-18` did not rate their findings. A later review
   rated them from their statements, and its ratings are in each record under

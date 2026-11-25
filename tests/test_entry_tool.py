@@ -498,6 +498,25 @@ def test_a_finding_that_can_be_about_either_says_which_from_pilot_15(repo):
     assert check("pilot-18", [{"kind": "methods_unavailable", "statement": "No bin width."}]) == []
     assert any("give its `severity`" in e for e in check("pilot-18", [{**other[0], "about": "data"}]))
     assert check("pilot-18", [{**other[0], "about": "paper"}]) == []
+    # A finding about the data can say which versions it was seen in and which fixed it: of one dataset, and not
+    # the same version for both.
+    seen = {**wrong_age, "severity": "minor", "versions": ["0.240503.0152"], "fixed_in": "0.240923.1441"}
+    assert check("pilot-18", [seen]) == []
+    assert any("both one it was seen in" in e for e in check("pilot-18", [{**seen, "fixed_in": "0.240503.0152"}]))
+    assert any("for a finding about the data" in e
+               for e in check("pilot-18", [{"kind": "methods_unavailable", "statement": "x", "fixed_in": "2"}]))
+    # The code that shows a finding is a tagged cell of the entry's notebooks. From pilot-19 a critical or major
+    # finding about the data names it; a minor one may.
+    major = {**wrong_age, "severity": "major"}
+    assert check("pilot-18", [major]) == []
+    assert any("name the notebook and the tagged cell" in e for e in check("pilot-19", [major]))
+    assert check("pilot-19", [{**wrong_age, "severity": "minor"}]) == []
+    assert check("pilot-19", [{**major, "notebook": "analysis.ipynb", "output": "sanity"}]) == []
+    assert any("no cell tagged 'no-such-cell'" in e
+               for e in check("pilot-19", [{**major, "notebook": "analysis.ipynb", "output": "no-such-cell"}]))
+    assert any("is not in the entry" in e
+               for e in check("pilot-19", [{**major, "notebook": "other.ipynb", "output": "sanity"}]))
+    assert any("`notebook` and `output`" in e for e in check("pilot-19", [{**major, "notebook": "analysis.ipynb"}]))
     # In round 2 the verifier reviews each critical finding; its review names the finding by its number.
     critical = [{**wrong_age, "severity": "critical"}]
     for number, wrong in ((1, False), (2, True)):

@@ -365,6 +365,35 @@ def check(entry_dir: Path) -> Report:
             for d in f.get("datasets") or []:
                 if str(d) not in used:
                     report.error(where, f"finding {n}: {d} is not a dataset of this attempt ({', '.join(used)})")
+            # The versions of the dataset a finding was seen in, and the one it was found fixed in, are about one
+            # dataset's data (docs/protocol.md, the attempt record).
+            if f.get("versions") or f.get("fixed_in"):
+                if about != "data":
+                    report.error(where, f"finding {n}: `versions` and `fixed_in` are for a finding about the data")
+                elif len(f.get("datasets") or used) > 1:
+                    report.error(where, f"finding {n}: `versions` and `fixed_in` name versions of one dataset; give "
+                                        f"the finding the one dataset they are of (`datasets:`)")
+                if f.get("fixed_in") in (f.get("versions") or []):
+                    report.error(where, f"finding {n}: version {f['fixed_in']} is both one it was seen in and the "
+                                        f"one it was fixed in")
+            # The code that shows a finding: a tagged cell of one of the entry's notebooks, as for an outcome. From
+            # pilot-19 a critical or major finding about the data names its cell; an earlier attempt was not asked.
+            shown, tag = f.get("notebook"), f.get("output")
+            if bool(shown) != bool(tag):
+                report.error(where, f"finding {n}: give the notebook that shows it and its cell together "
+                                    f"(`notebook` and `output`)")
+            if (version and int(version[1]) >= 19 and about == "data" and f.get("severity") in ("critical", "major")
+                    and not shown):
+                report.error(where, f"finding {n}: it is {f['severity']}; name the notebook and the tagged cell whose "
+                                    f"output shows it (`notebook`, `output`)")
+            # As for an outcome, only the latest attempt's cells are checked against the entry as it is now.
+            if shown and path == mine[-1]:
+                if shown not in listed:
+                    report.error(where, f"finding {n}: notebook {shown!r} is not in the entry")
+                elif shown in present and tag:
+                    cells = nbformat.read(entry_dir / shown, as_version=4).cells
+                    if not any(tag in c.metadata.get("tags", []) for c in cells):
+                        report.error(where, f"finding {n}: no cell tagged {tag!r} in {shown}")
         # A later review of an earlier attempt's findings (`findings_review`) rates those about the data, each once,
         # by its number in the record; an attempt that rates its own findings (pilot-18 on) has no such review.
         seen = set()
