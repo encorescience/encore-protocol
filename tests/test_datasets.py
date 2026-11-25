@@ -160,9 +160,11 @@ def test_a_figshare_dataset_is_named_by_its_article_id_and_pinned_by_its_version
 def test_figshare_targets_are_small_datasets_with_a_paper_and_checksums():
     from archives import ALL
     found = [t for t in datasets.targets() if t["archive"] == "figshare"]
-    assert len(found) == 3 and ALL["figshare"].stage is None and not ALL["figshare"].secrets
+    assert len(found) >= 3 and ALL["figshare"].stage is None and not ALL["figshare"].secrets
     for t in found:
-        assert t["item_type"] == "dataset" and t["papers"] and t["size_gb"] < 0.2, t["id"]
+        # A deposit of data with the script that analyses it is sometimes typed as software
+        # (FIGSHARE:19640805, Andreassen et al. 2022, holds eleven CSV files and one R script).
+        assert t["item_type"] in ("dataset", "software") and t["papers"] and t["size_gb"] < 0.2, t["id"]
         assert all(len(f["md5"] or "") == 32 and isinstance(f["file_id"], int) for f in t["files"]), t["id"]
 
 
