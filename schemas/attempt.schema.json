@@ -564,6 +564,31 @@
             "items": {
               "type": "string"
             }
+          },
+          "versions": {
+            "description": "For a finding about the data: the versions of the dataset the finding was seen in, as the archive names them (0.240503.0152). Unset: the version the attempt read. Give it when the finding was seen in another version, such as the one the paper cites, and list the version the attempt read too if the finding is there as well. With several `datasets`, the versions are of the one dataset the finding names.",
+            "type": "array",
+            "minItems": 1,
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "fixed_in": {
+            "description": "For a finding about the data: the first version of the dataset in which the attempt looked for the problem and it was gone. Unset: not known to be fixed. A fixed finding is kept in the record: it still matters for a paper that used the earlier version.",
+            "type": "string",
+            "minLength": 1
+          },
+          "notebook": {
+            "description": "Path of the notebook within the entry whose code shows the finding.",
+            "type": "string",
+            "minLength": 1
+          },
+          "output": {
+            "description": "Which output of that notebook shows the finding: a cell tag, as for an outcome.",
+            "type": "string",
+            "minLength": 1
           }
         }
       }
