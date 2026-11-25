@@ -1,0 +1,266 @@
+name: Attempt
+
+# A whole attempt on one paper, made from encore-runner or a fork of it (docs/outside-runs.md): the reader's claims
+# and their check (papers.yml), the author, the first verification round, the author's revision, the second round
+# and the final revision (attempt.yml), a third round when the final revision proposed changes, the reconcile run
+# when the paper has an earlier attempt, and the recorder's notes. Each step starts when the one before it has
+# succeeded, from the state that one left on the caller's own branch, attempt/<paper>, so a failure stops the
+# attempt and leaves its branch as the last step left it. The roles can also be run one at a time, with papers.yml
+# and attempt.yml, to take an attempt up again where it stopped.
+#
+# The registry is read and never written. The caller tells it when the attempt starts, and sends it the whole
+# attempt at the end; the registry's intake then checks every run's signature (encore-runner's own workflow does
+# both).
+#
+# Not here yet: the reader's answers to questions the author raises (the roles answer and author-answers), which
+# the registry's queue runner handles for CatalystNeuro's attempts. An attempt whose author asks questions goes on
+# without the answers.
+
+on:
+  workflow_call:
+    inputs:
+      paper:
+        type: string
+        required: true
+      model:
+        type: string
+        default: claude-opus-5-5
+      account:
+        type: string
+        default: verified
+      registry:
+        type: string
+        default: encorescience/encore-registry
+      papers_repo:
+        type: string
+        default: ""
+      accountable:
+        type: string
+        default: ""
+      # Where to take the attempt up: the first role to run. Empty: from the claims.
+      from:
+        type: string
+        default: ""
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN:
+        required: false
+      CLAUDE_CODE_OAUTH_TOKEN_UNVERIFIED:
+        required: false
+      ANTHROPIC_API_KEY_CREDITS:
+        required: false
+      ANTHROPIC_API_KEY:
+        required: false
+      PAPERS_DEPLOY_KEY:
+        required: false
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  # Which steps this run makes: all of them, or those from the role given in `from`.
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      skip: ${{ steps.plan.outputs.skip }}
+    steps:
+      - id: plan
+        env:
+          FROM: ${{ inputs.from }}
+        run: |
+          order="claims claims-check author verifier-1 author-revise-1 verifier-2 author-revise-2 verifier-3 author-revise-3 reconcile recorder"
+          skip=" "
+          if [ -n "$FROM" ]; then
+            case " $order " in *" $FROM "*) ;; *) echo "::error::Not a role to start from: '$FROM' (one of: $order)"; exit 1;; esac
+            for r in $order; do [ "$r" = "$FROM" ] && break; skip+="$r "; done
+          fi
+          echo "skip=$skip" >> "$GITHUB_OUTPUT"
+
+  claims:
+    needs: plan
+    if: ${{ !contains(needs.plan.outputs.skip, ' claims ') }}
+    uses: ./.github/workflows/papers.yml
+    with: {paper: "${{ inputs.paper }}", role: claims, model: "${{ inputs.model }}", account: "${{ inputs.account }}", registry: "${{ inputs.registry }}", papers_repo: "${{ inputs.papers_repo }}", accountable: "${{ inputs.accountable }}"}
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      CLAUDE_CODE_OAUTH_TOKEN_UNVERIFIED: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_UNVERIFIED }}
+      ANTHROPIC_API_KEY_CREDITS: ${{ secrets.ANTHROPIC_API_KEY_CREDITS }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      PAPERS_DEPLOY_KEY: ${{ secrets.PAPERS_DEPLOY_KEY }}
+
+  claims-check:
+    needs: [plan, claims]
+    if: ${{ !cancelled() && !failure() && !contains(needs.plan.outputs.skip, ' claims-check ') }}
+    uses: ./.github/workflows/papers.yml
+    with: {paper: "${{ inputs.paper }}", role: claims-check, model: "${{ inputs.model }}", account: "${{ inputs.account }}", registry: "${{ inputs.registry }}", papers_repo: "${{ inputs.papers_repo }}", accountable: "${{ inputs.accountable }}"}
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      CLAUDE_CODE_OAUTH_TOKEN_UNVERIFIED: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_UNVERIFIED }}
+      ANTHROPIC_API_KEY_CREDITS: ${{ secrets.ANTHROPIC_API_KEY_CREDITS }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      PAPERS_DEPLOY_KEY: ${{ secrets.PAPERS_DEPLOY_KEY }}
+
+  # The attempt starts only on a claims file whose last check says it is ready. The registry's intake checks the
+  # same at the end, from the signed runs.
+  claims-ready:
+    needs: [plan, claims-check]
+    if: ${{ !cancelled() && !failure() && !contains(needs.plan.outputs.skip, ' author ') }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          PAPER: ${{ inputs.paper }}
+        run: |
+          # The claims as the attempt's branch here has them. With no branch yet, the author starts from the
+          # claims the registry's main has, which were checked before they were merged.
+          gh api "repos/$GITHUB_REPOSITORY/contents/claims/$PAPER.yaml?ref=attempt/$PAPER" \
+            -H "Accept: application/vnd.github.raw" > claims.yaml 2>/dev/null || { echo "No claims on this repository's branch; the registry's are used."; exit 0; }
+          pip install -q --no-cache-dir pyyaml
+          python - <<'PY'
+          import sys, yaml
+          last = ((yaml.safe_load(open("claims.yaml")) or {}).get("checks") or [{}])[-1]
+          if not last.get("ready"):
+              sys.exit("::error::The claims check says the claims file is not ready; run claims-check again")
+          PY
+
+  author:
+    needs: [plan, claims-ready]
+    if: ${{ !cancelled() && !failure() && !contains(needs.plan.outputs.skip, ' author ') }}
+    uses: ./.github/workflows/attempt.yml
+    with: {paper: "${{ inputs.paper }}", role: author, model: "${{ inputs.model }}", account: "${{ inputs.account }}", registry: "${{ inputs.registry }}", papers_repo: "${{ inputs.papers_repo }}", accountable: "${{ inputs.accountable }}"}
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      CLAUDE_CODE_OAUTH_TOKEN_UNVERIFIED: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_UNVERIFIED }}
+      ANTHROPIC_API_KEY_CREDITS: ${{ secrets.ANTHROPIC_API_KEY_CREDITS }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      PAPERS_DEPLOY_KEY: ${{ secrets.PAPERS_DEPLOY_KEY }}
+
+  verifier-1:
+    needs: [plan, author]
+    if: ${{ !cancelled() && !failure() && !contains(needs.plan.outputs.skip, ' verifier-1 ') }}
+    uses: ./.github/workflows/attempt.yml
+    with: {paper: "${{ inputs.paper }}", role: verifier-1, model: "${{ inputs.model }}", account: "${{ inputs.account }}", registry: "${{ inputs.registry }}", papers_repo: "${{ inputs.papers_repo }}", accountable: "${{ inputs.accountable }}"}
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      CLAUDE_CODE_OAUTH_TOKEN_UNVERIFIED: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_UNVERIFIED }}
+      ANTHROPIC_API_KEY_CREDITS: ${{ secrets.ANTHROPIC_API_KEY_CREDITS }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      PAPERS_DEPLOY_KEY: ${{ secrets.PAPERS_DEPLOY_KEY }}
+
+  author-revise-1:
+    needs: [plan, verifier-1]
+    if: ${{ !cancelled() && !failure() && !contains(needs.plan.outputs.skip, ' author-revise-1 ') }}
+    uses: ./.github/workflows/attempt.yml
+    with: {paper: "${{ inputs.paper }}", role: author-revise-1, model: "${{ inputs.model }}", account: "${{ inputs.account }}", registry: "${{ inputs.registry }}", papers_repo: "${{ inputs.papers_repo }}", accountable: "${{ inputs.accountable }}"}
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      CLAUDE_CODE_OAUTH_TOKEN_UNVERIFIED: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_UNVERIFIED }}
+      ANTHROPIC_API_KEY_CREDITS: ${{ secrets.ANTHROPIC_API_KEY_CREDITS }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      PAPERS_DEPLOY_KEY: ${{ secrets.PAPERS_DEPLOY_KEY }}
+
+  verifier-2:
+    needs: [plan, author-revise-1]
+    if: ${{ !cancelled() && !failure() && !contains(needs.plan.outputs.skip, ' verifier-2 ') }}
+    uses: ./.github/workflows/attempt.yml
+    with: {paper: "${{ inputs.paper }}", role: verifier-2, model: "${{ inputs.model }}", account: "${{ inputs.account }}", registry: "${{ inputs.registry }}", papers_repo: "${{ inputs.papers_repo }}", accountable: "${{ inputs.accountable }}"}
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      CLAUDE_CODE_OAUTH_TOKEN_UNVERIFIED: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_UNVERIFIED }}
+      ANTHROPIC_API_KEY_CREDITS: ${{ secrets.ANTHROPIC_API_KEY_CREDITS }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      PAPERS_DEPLOY_KEY: ${{ secrets.PAPERS_DEPLOY_KEY }}
+
+  author-revise-2:
+    needs: [plan, verifier-2]
+    if: ${{ !cancelled() && !failure() && !contains(needs.plan.outputs.skip, ' author-revise-2 ') }}
+    uses: ./.github/workflows/attempt.yml
+    with: {paper: "${{ inputs.paper }}", role: author-revise-2, model: "${{ inputs.model }}", account: "${{ inputs.account }}", registry: "${{ inputs.registry }}", papers_repo: "${{ inputs.papers_repo }}", accountable: "${{ inputs.accountable }}"}
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      CLAUDE_CODE_OAUTH_TOKEN_UNVERIFIED: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_UNVERIFIED }}
+      ANTHROPIC_API_KEY_CREDITS: ${{ secrets.ANTHROPIC_API_KEY_CREDITS }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      PAPERS_DEPLOY_KEY: ${{ secrets.PAPERS_DEPLOY_KEY }}
+
+  # What the attempt's state says about the steps still to come: whether the final revision proposed changes of
+  # outcome, which a third round settles, and whether the paper has an earlier attempt, which the reconcile run
+  # compares this one with.
+  look:
+    needs: [plan, author-revise-2]
+    if: ${{ !cancelled() && !failure() }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      proposals: ${{ steps.look.outputs.proposals }}
+      repeat: ${{ steps.look.outputs.repeat }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: attempt/${{ inputs.paper }}
+          persist-credentials: false
+      - id: look
+        env:
+          PAPER: ${{ inputs.paper }}
+        run: |
+          pip install -q --no-cache-dir pyyaml
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          import glob, os, yaml
+          records = sorted(glob.glob(f"attempts/{os.environ['PAPER']}-[0-9][0-9].yaml"))
+          newest = (yaml.safe_load(open(records[-1])) or {}) if records else {}
+          proposed = any(o.get("proposed") for o in newest.get("outcomes") or [])
+          print(f"proposals={'true' if proposed else 'false'}")
+          print(f"repeat={'true' if len(records) > 1 else 'false'}")
+          PY
+
+  verifier-3:
+    needs: [plan, look]
+    if: ${{ !cancelled() && !failure() && needs.look.outputs.proposals == 'true' && !contains(needs.plan.outputs.skip, ' verifier-3 ') }}
+    uses: ./.github/workflows/attempt.yml
+    with: {paper: "${{ inputs.paper }}", role: verifier-3, model: "${{ inputs.model }}", account: "${{ inputs.account }}", registry: "${{ inputs.registry }}", papers_repo: "${{ inputs.papers_repo }}", accountable: "${{ inputs.accountable }}"}
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      CLAUDE_CODE_OAUTH_TOKEN_UNVERIFIED: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_UNVERIFIED }}
+      ANTHROPIC_API_KEY_CREDITS: ${{ secrets.ANTHROPIC_API_KEY_CREDITS }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      PAPERS_DEPLOY_KEY: ${{ secrets.PAPERS_DEPLOY_KEY }}
+
+  author-revise-3:
+    needs: [plan, look, verifier-3]
+    if: ${{ !cancelled() && !failure() && needs.look.outputs.proposals == 'true' && !contains(needs.plan.outputs.skip, ' author-revise-3 ') }}
+    uses: ./.github/workflows/attempt.yml
+    with: {paper: "${{ inputs.paper }}", role: author-revise-3, model: "${{ inputs.model }}", account: "${{ inputs.account }}", registry: "${{ inputs.registry }}", papers_repo: "${{ inputs.papers_repo }}", accountable: "${{ inputs.accountable }}"}
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      CLAUDE_CODE_OAUTH_TOKEN_UNVERIFIED: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_UNVERIFIED }}
+      ANTHROPIC_API_KEY_CREDITS: ${{ secrets.ANTHROPIC_API_KEY_CREDITS }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      PAPERS_DEPLOY_KEY: ${{ secrets.PAPERS_DEPLOY_KEY }}
+
+  reconcile:
+    needs: [plan, look, author-revise-3]
+    if: ${{ !cancelled() && !failure() && needs.look.outputs.repeat == 'true' && !contains(needs.plan.outputs.skip, ' reconcile ') }}
+    uses: ./.github/workflows/attempt.yml
+    with: {paper: "${{ inputs.paper }}", role: reconcile, model: "${{ inputs.model }}", account: "${{ inputs.account }}", registry: "${{ inputs.registry }}", papers_repo: "${{ inputs.papers_repo }}", accountable: "${{ inputs.accountable }}"}
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      CLAUDE_CODE_OAUTH_TOKEN_UNVERIFIED: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_UNVERIFIED }}
+      ANTHROPIC_API_KEY_CREDITS: ${{ secrets.ANTHROPIC_API_KEY_CREDITS }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      PAPERS_DEPLOY_KEY: ${{ secrets.PAPERS_DEPLOY_KEY }}
+
+  recorder:
+    needs: [plan, look, reconcile]
+    if: ${{ !cancelled() && !failure() && needs.look.result == 'success' }}
+    uses: ./.github/workflows/attempt.yml
+    with: {paper: "${{ inputs.paper }}", role: recorder, model: "${{ inputs.model }}", account: "${{ inputs.account }}", registry: "${{ inputs.registry }}", papers_repo: "${{ inputs.papers_repo }}", accountable: "${{ inputs.accountable }}"}
+    secrets:
+      CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+      CLAUDE_CODE_OAUTH_TOKEN_UNVERIFIED: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN_UNVERIFIED }}
+      ANTHROPIC_API_KEY_CREDITS: ${{ secrets.ANTHROPIC_API_KEY_CREDITS }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      PAPERS_DEPLOY_KEY: ${{ secrets.PAPERS_DEPLOY_KEY }}

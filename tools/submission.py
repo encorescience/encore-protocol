@@ -3,6 +3,9 @@
     python tools/submission.py pack --paper P --out DIR [--meta KEY=VALUE ...]
     python tools/submission.py apply SUBMISSION --paper P [--into DIR]
     python tools/submission.py show SUBMISSION
+    python tools/submission.py digest --paper P [--root DIR]
+    python tools/submission.py lay FROM --paper P [--into DIR]
+    python tools/submission.py record STATE --paper P --registry R --base-sha SHA --role ROLE --run-url URL ...
 
 A run started from a fork of encore-runner reads the registry but cannot write to it. Its last job (`submit` in
 attempt.yml and papers.yml) gathers what the run changed in the registry's files, as `pack` describes, into
@@ -13,6 +16,14 @@ signature, lays the files over main with `apply`, and opens a pull request for a
 every added or changed file goes in under `files/`, and `manifest.json` names each with its SHA-256, lists the files
 removed, and carries what the workflow says about the run (`--meta`). Only one paper's files may change: its claims
 file, attempt records, entry, questions and transcripts.
+
+An attempt made from encore-runner keeps its state between runs on the runner's own branch, attempt/<paper>: the
+paper's files, laid out as in the registry, and `.encore/attempt.json`, the ledger of its runs. `lay` puts the
+paper's files of one directory in place of another's, which is how a run starts from that state over a checkout of
+the registry, and how the state takes a run's results. `digest` names a state: one SHA-256 over the paper's files and
+their contents. Each run's submission carries the digest of the state it started from (`state_before`), so that the
+registry, laying the submissions one over the other from the commit of main the attempt began at, can tell that each
+run started from what the run before it left. `record` adds a run to the ledger.
 
 `apply` lays a submission over a checkout. It refuses a submission whose files are not the paper's, whose contents do
 not match the manifest, or whose archive holds anything but regular files, so that a submission can only ever change
@@ -47,6 +58,9 @@ def paper_files(paper: str) -> list[str]:
         rf"questions/{p}\.yaml",
         rf"questions/{p}/[^/]+\.yaml",
         rf"transcripts/{p}/[^\0]+",
+        # The recorder's notes on a finished attempt.
+        rf"docs/pilot-notes/{p}-[0-9]{{2}}\.md",
+        rf"summaries/{p}-[0-9]{{2}}\.md",
     ]
 
 
@@ -59,6 +73,62 @@ def belongs(path: str, paper: str) -> bool:
 
 def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+LEDGER = ".encore/attempt.json"
+# Where a paper's files are, to look no further than these in a checkout of the registry.
+PLACES = ("claims", "attempts", "entries", "questions", "transcripts", "docs/pilot-notes", "summaries")
+
+
+def state(root: Path, paper: str) -> dict[str, bytes]:
+    """The paper's files under `root`, by path. Only regular files: a link is not part of a state."""
+    found = {}
+    for place in PLACES:
+        top = root / place
+        if not top.is_dir():
+            continue
+        for f in sorted(top.rglob("*")):
+            rel = f.relative_to(root).as_posix()
+            if f.is_file() and not f.is_symlink() and belongs(rel, paper):
+                found[rel] = f.read_bytes()
+    return found
+
+
+def digest_of(files: dict[str, bytes]) -> str:
+    listing = "".join(f"{sha256(data)}  {path}\n" for path, data in sorted(files.items()))
+    return sha256(listing.encode())
+
+
+def digest(root: Path, paper: str) -> str:
+    """One name for the paper's files under `root` and their contents."""
+    return digest_of(state(root, paper))
+
+
+def lay(src: Path, dest: Path, paper: str) -> int:
+    """Put the paper's files of `src` in place of the paper's files of `dest`; the rest of `dest` is left alone."""
+    if not re.fullmatch(KEY, paper):
+        raise SystemExit(f"Not a paper key: {paper!r}")
+    files = state(src, paper)
+    for x in state(dest, paper):
+        (dest / x).unlink()
+    for x, data in files.items():
+        (dest / x).parent.mkdir(parents=True, exist_ok=True)
+        (dest / x).write_bytes(data)
+    return len(files)
+
+
+def record(state_dir: Path, paper: str, registry: str, base_sha: str, run: dict) -> dict:
+    """Add a run to the ledger of the attempt whose state is in `state_dir`, starting the ledger if there is none."""
+    path = state_dir / LEDGER
+    ledger = json.loads(path.read_text()) if path.is_file() else {
+        "format": FORMAT, "paper": paper, "registry": registry, "base_sha": base_sha, "runs": []}
+    for key, value in (("paper", paper), ("registry", registry), ("base_sha", base_sha)):
+        if ledger.get(key) != value:
+            raise SystemExit(f"The ledger's {key} is {ledger.get(key)!r}, and this run's is {value!r}")
+    ledger["runs"].append(run)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(ledger, indent=1) + "\n")
+    return ledger
 
 
 def staged(root: Path) -> tuple[list[str], list[str]]:
@@ -161,7 +231,31 @@ def main(argv=None) -> int:
     b.add_argument("--into", default=Path("."), type=Path)
     c = sub.add_parser("show")
     c.add_argument("submission", type=Path)
+    d = sub.add_parser("digest")
+    d.add_argument("--paper", required=True)
+    d.add_argument("--root", default=Path("."), type=Path)
+    e = sub.add_parser("lay")
+    e.add_argument("src", type=Path)
+    e.add_argument("--paper", required=True)
+    e.add_argument("--into", default=Path("."), type=Path)
+    f = sub.add_parser("record")
+    f.add_argument("state", type=Path)
+    for name in ("paper", "registry", "base-sha", "role", "run-url", "result", "before", "after"):
+        f.add_argument(f"--{name}", required=True)
+    f.add_argument("--artifact", default="")
     args = ap.parse_args(argv)
+    if args.cmd == "digest":
+        print(digest(args.root, args.paper))
+        return 0
+    if args.cmd == "lay":
+        print(f"Laid {lay(args.src, args.into, args.paper)} files of {args.paper} from {args.src} over {args.into}")
+        return 0
+    if args.cmd == "record":
+        ledger = record(args.state, args.paper, args.registry, args.base_sha,
+                        {"role": args.role, "run_url": args.run_url, "result": args.result, "artifact": args.artifact,
+                         "state_before": args.before, "state_after": args.after})
+        print(f"Run {len(ledger['runs'])} of the attempt on {args.paper}: {args.role}")
+        return 0
     if args.cmd == "pack":
         meta = dict(kv.split("=", 1) for kv in args.meta)
         m = pack(args.root, args.paper, meta, args.out)
