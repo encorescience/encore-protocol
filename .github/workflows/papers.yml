@@ -10,7 +10,7 @@ run-name: "Paper run: ${{ inputs.paper || inputs.dataset || inputs.dandiset }}${
 #   gh workflow run papers.yml -f paper=guan-2022 -f role=claims
 #
 # These are the only runs that write the claims file, and the paper match papers/match/<folder>.yaml. The job runs in the `papers` environment,
-# whose deploy key reads the private paper store (catalystneuro/registry-papers); the environment
+# whose deploy key reads the private paper store (encorescience/registry-papers); the environment
 # can be used only from main. Before the agent starts, tools/get_papers.sh copies the dataset's
 # papers to paper/ and deletes the key and the store's checkout. A run commits only
 # claims/<folder>/ and questions/<folder>.yaml, and its transcript leaves out everything under
@@ -43,8 +43,8 @@ on:
         type: string
         default: verified
       # Outside CatalystNeuro (docs/outside-runs.md): the caller passes its own repository variables here, since a
-      # called workflow cannot be relied on to read them. Empty: CatalystNeuro's paper store, and the accountable
-      # name agent_run.py works out from the repository.
+      # called workflow cannot be relied on to read them. Empty: Encore's paper store (encorescience/registry-papers),
+      # and the accountable name agent_run.py works out from the repository.
       papers_repo:
         type: string
         default: ""

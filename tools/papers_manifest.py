@@ -1,6 +1,6 @@
 """Write papers/manifest.yaml: for each target's papers, whether the paper store has the full text.
 
-    python tools/papers_manifest.py STORE        # STORE: a checkout of catalystneuro/registry-papers
+    python tools/papers_manifest.py STORE        # STORE: a checkout of encorescience/registry-papers
 
 The store is private; the manifest is public and holds none of the text, only where each text
 came from and what is missing (docs/pipeline.md). A target's papers are those its archive's metadata

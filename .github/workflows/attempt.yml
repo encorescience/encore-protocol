@@ -50,8 +50,8 @@ on:
         type: string
         default: verified
       # Outside CatalystNeuro (docs/outside-runs.md): the caller passes its own repository variables here, since a
-      # called workflow cannot be relied on to read them. Empty: CatalystNeuro's paper store, and the accountable
-      # name agent_run.py works out from the repository.
+      # called workflow cannot be relied on to read them. Empty: Encore's paper store (encorescience/registry-papers),
+      # and the accountable name agent_run.py works out from the repository.
       papers_repo:
         type: string
         default: ""

@@ -104,7 +104,7 @@ reads its claims again before the new attempt.
 
 ## Access
 
-The papers are kept in a private repository, `catalystneuro/registry-papers`.
+The papers are kept in a private repository, `encorescience/registry-papers`.
 Only jobs that declare the GitHub environment `papers` can read it: the
 environment holds a read-only deploy key for it and may be used only by
 workflows on `main`. Every agent job declares it, and `tools/get_papers.sh`
@@ -148,7 +148,7 @@ a table from a web page) is listed on its page as "Other data and code used".
 
 ## The paper store
 
-`catalystneuro/registry-papers` holds, per dataset:
+`encorescience/registry-papers` holds, per dataset:
 
 ```
 <folder>/
