@@ -186,7 +186,8 @@ jobs:
                 echo "::error::The attempt on $FOLDER under way in $REGISTRY is not this repository's (${source:-begun in the registry}); wait for it to finish"; exit 1; }
             fi
             git -C .protocol show "$WORKFLOW_SHA:tools/submission.py" > "$RUNNER_TEMP/submission.py"
-            runner="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+            # This repository, read with the job's own token. (RUNNER_REMOTE: another address, for the tests.)
+            runner=${RUNNER_REMOTE:-"https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"}
             base=$MAIN_SHA
             # 0: the branch exists; 2: it does not; anything else: the question failed, and the run must not
             # start as if the attempt were new.
