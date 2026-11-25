@@ -359,20 +359,41 @@ The workflows take a dataset in any of these forms.
   (`registrations/` for a registration); each provider's top folder, and each
   folder in it, lists its items at its `relationships.files` address. A
   file's attributes give its `materialized_path`, `size`, `current_version`
-  and `extra.hashes` (`md5`, `sha256`), and its `links.download` is a
-  WaterButler address on `files.osf.io` (or a regional host such as
-  `files.de1.osf.io`). Add `?version=<n>` to the download address to read a
-  given version. Open the file with `fsspec.open(url, block_size=2**20)` or
-  `pandas`, and read it into memory; do not download whole files to disk. The
-  project's wiki (`/nodes/<GUID>/wikis/`) and a README among its files, when
-  there is one, describe the data; the description in the target list is the
-  project's own.
+  and `extra.hashes` (`md5`, `sha256`), and its `links.download` is an
+  address on `osf.io` (`https://osf.io/download/<id>/`). That address
+  redirects to WaterButler on `files.osf.io` (or a regional host such as
+  `files.de-1.osf.io`), which redirects in turn to OSF's object storage on
+  Oracle Cloud (`*.compat.objectstorage.<region>.oraclecloud.com`), where
+  range requests work. Add `?version=<n>` to the download address to read a
+  given version; a version that does not exist gives 400 Bad Request. The
+  sizes of every version are at `https://api.osf.io/v2/files/<id>/versions/`,
+  and their hashes at the WaterButler address with `?revisions` added. Open
+  the file with `fsspec.filesystem("http").open(url, block_size=2**20,
+  size=<size>)` and read it into memory; do not download whole files to
+  disk. Give the size: WaterButler answers a HEAD request with the size of
+  the file's first version, whatever version is asked for, and fsspec, left
+  to find the size that way, stops reading a later version that is larger at
+  the first version's size, with no error. Check the SHA-256 of what you read
+  against the target list. `pandas.read_csv(url)` reads the whole file with
+  one request and is not affected. The project's wiki
+  (`/nodes/<GUID>/wikis/`) and a README among its files, when there is one,
+  describe the data; the description in the target list is the project's
+  own.
+- **Registrations.** A registration's files are copies with ids of their
+  own, each at version 1, so their download addresses never change. In
+  recent registrations the files of OSF Storage sit under a folder named
+  `Archive of OSF Storage/`, which the target list keeps in their paths; in
+  older ones they sit at the top. A registration's contributors are those of
+  the project when it was registered.
 - **Storage add-ons.** Besides OSF Storage (`osfstorage`), a project can link
   folders from GitHub, Google Drive, Dropbox, Box, Figshare, Amazon S3 and
   others. Their files are listed and read through the same API, named in the
   target list with the provider first (`github/analysis.py`), but OSF does not
   version them: what an add-on folder holds can change with no new version,
-  and its files may have no hashes. The builder warns when a project has such
+  and its files may have no size or hashes. The API still gives such a file a
+  `current_version` of 1, but its download address answers `?version=1` with
+  404 Not Found, so the target list gives it no version; read it at its
+  download address as it is. The builder warns when a project has such
   files. A GitHub, GitLab or Bitbucket add-on is listed under `code`.
 - **In an entry.** The entry names the dataset as
   `osf:<GUID>/<published_version>` under `related`, and gives in the notebook
