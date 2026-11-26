@@ -100,7 +100,8 @@ The workflows take a dataset in any of these forms.
   and pins it; a version's number (`versionNumber`) counts metadata edits as
   well as file changes, so it is not a pin. Record the version id under
   `dataset: version` and the DOI under `dataset: doi`, and give in the notebook
-  header the SHA-256 digest of each file read, which the file list gives.
+  header the digest of each file read that the file list gives: its SHA-256,
+  or for an older file that Dryad lists with an MD5 only, its MD5.
   List the versions with `/api/v2/datasets/<url-encoded doi:...>/versions`.
 - **Reading.** Metadata, versions and file lists are public:
   `https://datadryad.org/api/v2/datasets/doi%3A10.5061%2Fdryad.<id>` and
