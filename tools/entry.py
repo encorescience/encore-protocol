@@ -365,6 +365,11 @@ def check(entry_dir: Path) -> Report:
             for d in f.get("datasets") or []:
                 if str(d) not in used:
                     report.error(where, f"finding {n}: {d} is not a dataset of this attempt ({', '.join(used)})")
+            # From pilot-20 a finding is a problem: a check that passed is shown in the notebook, not recorded as a
+            # finding rated `none` (docs/protocol.md, the attempt record).
+            if version and int(version[1]) >= 20 and f.get("severity") == "none":
+                report.error(where, f"finding {n}: rated `none`, a check that passed; that is not a finding. Leave it "
+                                    f"to the notebook and the README, and remove it from `findings`")
             # The versions of the dataset a finding was seen in, and the one it was found fixed in, are about one
             # dataset's data (docs/protocol.md, the attempt record).
             if f.get("versions") or f.get("fixed_in"):

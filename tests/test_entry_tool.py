@@ -498,6 +498,10 @@ def test_a_finding_that_can_be_about_either_says_which_from_pilot_15(repo):
     assert check("pilot-18", [{"kind": "methods_unavailable", "statement": "No bin width."}]) == []
     assert any("give its `severity`" in e for e in check("pilot-18", [{**other[0], "about": "data"}]))
     assert check("pilot-18", [{**other[0], "about": "paper"}]) == []
+    # From pilot-20 a check that passed is not a finding.
+    passed = {**wrong_age, "severity": "none"}
+    assert check("pilot-19", [passed]) == []
+    assert any("a check that passed" in e for e in check("pilot-20", [passed]))
     # A finding about the data can say which versions it was seen in and which fixed it: of one dataset, and not
     # the same version for both.
     seen = {**wrong_age, "severity": "minor", "versions": ["0.240503.0152"], "fixed_in": "0.240923.1441"}
