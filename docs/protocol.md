@@ -1,6 +1,6 @@
 # Protocol for an attempt
 
-Version: `pilot-19`. Record this version in the attempt's provenance.
+Version: `pilot-20`. Record this version in the attempt's provenance.
 
 This is what agents, or people, do to attempt a target and deposit the
 result. A target is a dataset in a public archive and a paper it names. How
@@ -384,7 +384,8 @@ sessions, decoding the annotations with the labels shifted in time), and name an
 session where this could not be established. A description that a check
 supports but does not prove is reported as consistent with the data, not as
 shown. Where they disagree, trust the data, say so in the notebook,
-and record it as a finding.
+and record it as a finding. A check that passed is not a finding: the
+notebook shows it, and the entry's README says which checks were made.
 
 Show each problem in the data with code. Give it a cell of its own, tagged
 `finding-<short-name>`, that loads only what it needs and prints the values
@@ -549,8 +550,10 @@ Write `attempts/<paper>-<nn>.yaml`, numbered after the paper's earlier attempts.
   verification round, with its `reason` (see "Hand over for verification").
 - **`inputs`**: everything used that is not in the dataset, each with where
   it came from (a DOI, or a repository at a commit).
-- **`findings`**: what the attempt found, whatever the outcomes. Each is
-  about one of two things, and is shown where it belongs:
+- **`findings`**: the problems the attempt found, whatever the outcomes.
+  A finding says what is wrong, missing or unclear; a check that passed is
+  not one (step 2). Each is about one of two things, and is shown where it
+  belongs:
   - **the data** (`about: data`): the dataset's files or metadata. Something
     is wrong, missing, undocumented or mislabelled, or differs from what the
     paper says the files hold. These are for the data owner and the archive,
@@ -579,7 +582,6 @@ Write `attempts/<paper>-<nn>.yaml`, numbered after the paper's earlier attempts.
   | `critical` | The data are wrong, and nothing in the files shows it. An analysis that takes them as given comes out wrong. | One recording, session or unit deposited as two. Data filed under the wrong subject, session, area or label. Spikes, signals or events on different clocks. A spike train that holds another unit's spikes. Labels that say the opposite of the data. |
   | `major` | A main analysis is blocked or changed, and the user would notice. | Trials, behaviour or a whole condition missing. A column an analysis needs with no definition. Counts far from the paper's. A scale that cannot be read off the values: one that differs between files or within a series, or is off by a small factor. |
   | `minor` | The problem is evident from the values, or easy to work around. | A wrong unit label or conversion factor (volts that hold millivolts, meters that hold centimetres, degrees that hold radians). A small difference in counts. A missing description that the data make clear. Spike times that only need sorting. |
-  | `none` | No problem. | A check that passed. A note that the data agree with the paper. |
 
   Give a finding about the data the code that shows it: `notebook`, the
   notebook in the entry, and `output`, the tag of the cell whose output shows
@@ -612,6 +614,10 @@ Write `attempts/<paper>-<nn>.yaml`, numbered after the paper's earlier attempts.
   to the verifier's, or keeps it and says why under `response`. Findings keep
   their order from then on, and a new one goes at the end. The site presents
   a critical finding as one only when a verifier agreed.
+
+  Attempts made before `pilot-20` could also record a check that passed, as
+  a finding rated `none`. Such a finding stays in its record and is not
+  shown with the problems.
 
   Attempts made before `pilot-19` were not asked for a finding's code or
   versions, and a finding without `versions` is about the version its attempt
